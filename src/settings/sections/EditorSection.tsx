@@ -17,8 +17,10 @@ import {
   AUTO_SAVE_DELAY_MAX,
   AUTO_SAVE_DELAY_MIN,
   clampAutoSaveDelay,
+  type DiffViewMode,
   EDITOR_FONT_SIZES,
   type EditorFormatter,
+  setDiffViewMode,
   setEditorAutoSave,
   setEditorAutoSaveDelay,
   setEditorCustomFormatCommand,
@@ -40,6 +42,7 @@ const AUTO_SAVE_STEP = 100;
 
 export function EditorSection() {
   const editorFontSize = usePreferencesStore((s) => s.editorFontSize);
+  const diffViewMode = usePreferencesStore((s) => s.diffViewMode);
   const vimMode = usePreferencesStore((s) => s.vimMode);
   const editorWordWrap = usePreferencesStore((s) => s.editorWordWrap);
   const editorAutoSave = usePreferencesStore((s) => s.editorAutoSave);
@@ -80,6 +83,27 @@ export function EditorSection() {
                   {size} px
                 </SelectItem>
               ))}
+            </SelectContent>
+          </Select>
+        </SettingRow>
+        <SettingRow
+          title="Diff view"
+          description="How git diffs are laid out: inline in a single column, or side by side like VS Code."
+        >
+          <Select
+            value={diffViewMode}
+            onValueChange={(v) => void setDiffViewMode(v as DiffViewMode)}
+          >
+            <SelectTrigger size="sm" className="h-8 w-36 text-[12px]">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="inline" className="text-[12px]">
+                Inline
+              </SelectItem>
+              <SelectItem value="split" className="text-[12px]">
+                Side by side
+              </SelectItem>
             </SelectContent>
           </Select>
         </SettingRow>
