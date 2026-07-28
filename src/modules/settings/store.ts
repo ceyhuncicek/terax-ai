@@ -157,6 +157,7 @@ export type Preferences = {
   editorWordWrapColumn: number;
   showHidden: boolean;
   explorerGitDecorations: boolean;
+  sourceControlUndoCommit: boolean;
   terminalRenderer: "auto" | "webgl";
   terminalScreenReader: boolean;
   terminalCursorBlink: boolean;
@@ -253,6 +254,7 @@ const KEY_EDITOR_WORD_WRAP_COLUMN = "editorWordWrapColumn";
 const KEY_SHOW_HIDDEN = "showHidden";
 const LEGACY_KEY_SHOW_HIDDEN_DIRS = "showHiddenDirectories";
 const KEY_EXPLORER_GIT_DECORATIONS = "explorerGitDecorations";
+const KEY_SOURCE_CONTROL_UNDO_COMMIT = "sourceControlUndoCommit";
 const KEY_TERMINAL_RENDERER = "terminalRenderer";
 const KEY_TERMINAL_SCREEN_READER = "terminalScreenReader";
 const KEY_TERMINAL_CURSOR_BLINK = "terminalCursorBlink";
@@ -345,6 +347,7 @@ export const DEFAULT_PREFERENCES: Preferences = {
   editorWordWrapColumn: EDITOR_WORD_WRAP_COLUMN_DEFAULT,
   showHidden: false,
   explorerGitDecorations: true,
+  sourceControlUndoCommit: true,
   terminalRenderer: "auto",
   terminalScreenReader: false,
   terminalCursorBlink: false,
@@ -502,6 +505,9 @@ export async function loadPreferences(): Promise<Preferences> {
     explorerGitDecorations:
       get<boolean>(KEY_EXPLORER_GIT_DECORATIONS) ??
       DEFAULT_PREFERENCES.explorerGitDecorations,
+    sourceControlUndoCommit:
+      get<boolean>(KEY_SOURCE_CONTROL_UNDO_COMMIT) ??
+      DEFAULT_PREFERENCES.sourceControlUndoCommit,
     terminalRenderer:
       get<string>(KEY_TERMINAL_RENDERER) === "webgl" ? "webgl" : "auto",
     terminalScreenReader: get<boolean>(KEY_TERMINAL_SCREEN_READER) === true,
@@ -796,6 +802,12 @@ export async function setExplorerGitDecorations(value: boolean): Promise<void> {
   await writePref(KEY_EXPLORER_GIT_DECORATIONS, value);
 }
 
+export async function setSourceControlUndoCommit(
+  value: boolean,
+): Promise<void> {
+  await writePref(KEY_SOURCE_CONTROL_UNDO_COMMIT, value);
+}
+
 export async function setTerminalRenderer(
   value: "auto" | "webgl",
 ): Promise<void> {
@@ -999,6 +1011,7 @@ export async function onPreferencesChange(
     [KEY_EDITOR_WORD_WRAP_COLUMN]: "editorWordWrapColumn",
     [KEY_SHOW_HIDDEN]: "showHidden",
     [KEY_EXPLORER_GIT_DECORATIONS]: "explorerGitDecorations",
+    [KEY_SOURCE_CONTROL_UNDO_COMMIT]: "sourceControlUndoCommit",
     [KEY_TERMINAL_RENDERER]: "terminalRenderer",
     [KEY_TERMINAL_SCREEN_READER]: "terminalScreenReader",
     [KEY_TERMINAL_CURSOR_BLINK]: "terminalCursorBlink",

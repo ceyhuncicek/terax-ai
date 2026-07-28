@@ -24,6 +24,7 @@ import {
   setExplorerGitDecorations,
   setRestoreWindowState,
   setShowHidden,
+  setSourceControlUndoCommit,
   setTerminalCursorBlink,
   setTerminalCursorStyle,
   setTerminalFontFamily,
@@ -95,6 +96,9 @@ export function GeneralSection() {
   const showHidden = usePreferencesStore((s) => s.showHidden);
   const explorerGitDecorations = usePreferencesStore(
     (s) => s.explorerGitDecorations,
+  );
+  const sourceControlUndoCommit = usePreferencesStore(
+    (s) => s.sourceControlUndoCommit,
   );
   const terminalRenderer = usePreferencesStore((s) => s.terminalRenderer);
   const terminalScreenReader = usePreferencesStore(
@@ -241,6 +245,15 @@ export function GeneralSection() {
           <Switch
             checked={explorerGitDecorations}
             onCheckedChange={(v) => void setExplorerGitDecorations(v)}
+          />
+        </SettingRow>
+        <SettingRow
+          title="Undo last commit"
+          description="Show the undo action on the newest commit in Source Control."
+        >
+          <Switch
+            checked={sourceControlUndoCommit}
+            onCheckedChange={(v) => void setSourceControlUndoCommit(v)}
           />
         </SettingRow>
       </div>
