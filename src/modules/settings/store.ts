@@ -118,6 +118,8 @@ export const EDITOR_THEME_LABELS: Record<EditorThemeId, string> = {
   "xcode-light": "Xcode Light",
 };
 
+export type DiffViewMode = "inline" | "split";
+
 export type Preferences = {
   theme: ThemePref;
   themeId: string;
@@ -154,6 +156,7 @@ export type Preferences = {
   recentModelIds: string[];
   vimMode: boolean;
   editorWordWrap: boolean;
+  diffViewMode: DiffViewMode;
   editorWordWrapColumn: number;
   showHidden: boolean;
   explorerGitDecorations: boolean;
@@ -250,6 +253,7 @@ const KEY_FAVORITE_MODELS = "favoriteModelIds";
 const KEY_RECENT_MODELS = "recentModelIds";
 const KEY_VIM_MODE = "vimMode";
 const KEY_EDITOR_WORD_WRAP = "editorWordWrap";
+const KEY_DIFF_VIEW_MODE = "diffViewMode";
 const KEY_EDITOR_WORD_WRAP_COLUMN = "editorWordWrapColumn";
 const KEY_SHOW_HIDDEN = "showHidden";
 const LEGACY_KEY_SHOW_HIDDEN_DIRS = "showHiddenDirectories";
@@ -344,6 +348,7 @@ export const DEFAULT_PREFERENCES: Preferences = {
   recentModelIds: [],
   vimMode: false,
   editorWordWrap: false,
+  diffViewMode: "inline",
   editorWordWrapColumn: EDITOR_WORD_WRAP_COLUMN_DEFAULT,
   showHidden: false,
   explorerGitDecorations: true,
@@ -494,6 +499,11 @@ export async function loadPreferences(): Promise<Preferences> {
     vimMode: get<boolean>(KEY_VIM_MODE) ?? DEFAULT_PREFERENCES.vimMode,
     editorWordWrap:
       get<boolean>(KEY_EDITOR_WORD_WRAP) ?? DEFAULT_PREFERENCES.editorWordWrap,
+    diffViewMode: ((): DiffViewMode => {
+      const stored = get<string>(KEY_DIFF_VIEW_MODE);
+      if (stored === "inline" || stored === "split") return stored;
+      return DEFAULT_PREFERENCES.diffViewMode;
+    })(),
     editorWordWrapColumn: clampEditorWordWrapColumn(
       get<number>(KEY_EDITOR_WORD_WRAP_COLUMN) ??
         DEFAULT_PREFERENCES.editorWordWrapColumn,
@@ -794,6 +804,10 @@ export async function setEditorWordWrapColumn(value: number): Promise<void> {
   );
 }
 
+export async function setDiffViewMode(value: DiffViewMode): Promise<void> {
+  await writePref(KEY_DIFF_VIEW_MODE, value);
+}
+
 export async function setShowHidden(value: boolean): Promise<void> {
   await writePref(KEY_SHOW_HIDDEN, value);
 }
@@ -1008,6 +1022,7 @@ export async function onPreferencesChange(
     [KEY_RECENT_MODELS]: "recentModelIds",
     [KEY_VIM_MODE]: "vimMode",
     [KEY_EDITOR_WORD_WRAP]: "editorWordWrap",
+    [KEY_DIFF_VIEW_MODE]: "diffViewMode",
     [KEY_EDITOR_WORD_WRAP_COLUMN]: "editorWordWrapColumn",
     [KEY_SHOW_HIDDEN]: "showHidden",
     [KEY_EXPLORER_GIT_DECORATIONS]: "explorerGitDecorations",
