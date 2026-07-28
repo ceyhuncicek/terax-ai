@@ -1,9 +1,9 @@
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Spinner } from "@/components/ui/spinner";
+import { usePreferencesStore } from "@/modules/settings/preferences";
 import { unifiedMergeView } from "@codemirror/merge";
-import { EditorState, type Extension } from "@codemirror/state";
-import { EditorView } from "@codemirror/view";
+import type { Extension } from "@codemirror/state";
 import CodeMirror, { type ReactCodeMirrorRef } from "@uiw/react-codemirror";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -13,13 +13,16 @@ import {
   getCachedDiff,
   workingDiffKey,
 } from "./lib/diffCache";
+import { UNIFIED_DIFF_THEME } from "./lib/diffTheme";
 import {
   buildSharedExtensions,
   DEFAULT_INDENT,
   languageCompartment,
+  READONLY_EXTENSIONS,
 } from "./lib/extensions";
 import { resolveLanguage, resolveLanguageSync } from "./lib/languageResolver";
 import { useEditorThemeExt } from "./lib/useEditorThemeExt";
+import { SplitDiffView } from "./SplitDiffView";
 
 type WorkingSource = {
   kind: "working";
@@ -46,47 +49,6 @@ type Props = {
 const LARGE_FILE_THRESHOLD = 256 * 1024;
 
 const SHARED_EXT = buildSharedExtensions();
-const READONLY_EXT = [
-  EditorState.readOnly.of(true),
-  EditorView.editable.of(false),
-];
-const DIFF_THEME = EditorView.theme({
-  "&.cm-merge-b .cm-changedText, .cm-changedText": {
-    background: "rgba(110, 200, 120, 0.20) !important",
-    borderRadius: "3px",
-    padding: "0 1px",
-  },
-  ".cm-deletedChunk .cm-deletedText, &.cm-merge-b .cm-deletedText": {
-    background: "rgba(220, 90, 90, 0.22) !important",
-    borderRadius: "3px",
-    padding: "0 1px",
-  },
-  "&.cm-merge-b .cm-changedLine, .cm-changedLine, .cm-inlineChangedLine": {
-    backgroundColor: "rgba(110, 200, 120, 0.05) !important",
-  },
-  ".cm-deletedChunk": {
-    backgroundColor: "rgba(220, 90, 90, 0.05) !important",
-    paddingTop: "1px",
-    paddingBottom: "1px",
-  },
-  "&.cm-merge-b .cm-changedLineGutter, .cm-changedLineGutter": {
-    background: "rgba(110, 200, 120, 0.55) !important",
-  },
-  ".cm-deletedLineGutter, &.cm-merge-a .cm-changedLineGutter": {
-    background: "rgba(220, 90, 90, 0.5) !important",
-  },
-  ".cm-changeGutter": {
-    width: "2px !important",
-    paddingLeft: "0 !important",
-  },
-  ".cm-collapsedLines": {
-    backgroundColor: "transparent",
-    color: "var(--muted-foreground, #9ca3af)",
-    fontSize: "10.5px",
-    padding: "2px 8px",
-    opacity: 0.7,
-  },
-});
 
 function countDiffLines(patch: string): { added: number; removed: number } {
   let added = 0;
@@ -139,6 +101,7 @@ function loadStateFromCache(source: WorkingSource | CommitSource): LoadState {
 export function GitDiffPane({ source, chipLabel, active }: Props) {
   const cmRef = useRef<ReactCodeMirrorRef>(null);
   const themeExt = useEditorThemeExt();
+  const diffViewMode = usePreferencesStore((s) => s.diffViewMode);
   const [state, setState] = useState<LoadState>(() =>
     active ? loadStateFromCache(source) : { kind: "idle" },
   );
@@ -210,29 +173,35 @@ export function GitDiffPane({ source, chipLabel, active }: Props) {
   const useFallback = isBinary || isTooLarge;
 
   const langExt = loaded?.langExt ?? null;
+  // Only the inline <CodeMirror> consumes these; skip building them in split
+  // mode where SplitDiffView owns its own editor setup.
   const extensions = useMemo(
-    () => [
-      ...SHARED_EXT,
-      DEFAULT_INDENT,
-      languageCompartment.of(langExt ?? []),
-      ...READONLY_EXT,
-      unifiedMergeView({
-        original: originalContent,
-        mergeControls: false,
-        highlightChanges: true,
-        gutter: true,
-        syntaxHighlightDeletions: true,
-        collapseUnchanged: { margin: 3, minSize: 6 },
-      }),
-      DIFF_THEME,
-    ],
-    [originalContent, langExt],
+    () =>
+      diffViewMode === "split"
+        ? []
+        : [
+            ...SHARED_EXT,
+            DEFAULT_INDENT,
+            languageCompartment.of(langExt ?? []),
+            ...READONLY_EXTENSIONS,
+            unifiedMergeView({
+              original: originalContent,
+              mergeControls: false,
+              highlightChanges: true,
+              gutter: true,
+              syntaxHighlightDeletions: true,
+              collapseUnchanged: { margin: 3, minSize: 6 },
+            }),
+            UNIFIED_DIFF_THEME,
+          ],
+    [originalContent, langExt, diffViewMode],
   );
 
   // Cache-hit path only: the diff came from the cache before the language
   // pack was imported. Resolve and reconfigure once the view exists.
   useEffect(() => {
     if (useFallback || state.kind !== "loaded" || state.langExt) return;
+    if (diffViewMode === "split") return;
     let cancelled = false;
     resolveLanguage(path).then((res) => {
       if (cancelled || !res) return;
@@ -243,7 +212,7 @@ export function GitDiffPane({ source, chipLabel, active }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [useFallback, path, state]);
+  }, [useFallback, path, state, diffViewMode]);
 
   const stats = useMemo(
     () =>
@@ -308,6 +277,12 @@ export function GitDiffPane({ source, chipLabel, active }: Props) {
               {fallbackPatch || "Diff preview is not available for this file."}
             </pre>
           </ScrollArea>
+        ) : diffViewMode === "split" ? (
+          <SplitDiffView
+            original={originalContent}
+            modified={modifiedContent}
+            path={path}
+          />
         ) : (
           <CodeMirror
             ref={cmRef}
