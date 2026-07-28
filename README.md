@@ -97,6 +97,15 @@ Terax is a lightweight open-source terminal (ADE) built on Tauri 2 + Rust and Re
 
 Latest installers are on the [Releases](https://github.com/crynta/terax-ai/releases/latest) page. Terax auto-updates from there.
 
+### macOS notes
+
+- The macOS build isn't notarized yet, so on first launch macOS may say the app **"is damaged and can't be opened."** This is Gatekeeper blocking an unsigned download, not actual corruption.
+- Fix: drag **Terax++** into **Applications**, then run the command below and open it normally. Right-click -> Open does **not** clear this for unsigned apps.
+  ```bash
+  xattr -dr com.apple.quarantine "/Applications/Terax++.app"
+  ```
+- Run it from **Applications**, not from the mounted `.dmg` (the disk image is read-only, so nothing happens when you try to launch it there).
+
 ### Windows notes
 
 - On first launch Windows shows "Windows protected your PC" because Terax isn't code-signed yet. Click **More info** then **Run anyway**.
