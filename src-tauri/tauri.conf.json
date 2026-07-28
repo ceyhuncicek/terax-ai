@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Terax",
+  "productName": "Terax++",
   "version": "0.8.6",
-  "identifier": "app.crynta.terax",
+  "identifier": "app.crynta.teraxpp",
   "build": {
     "beforeDevCommand": "pnpm dev",
     "devUrl": "http://localhost:1420",
@@ -13,7 +13,7 @@
   "app": {
     "windows": [
       {
-        "title": "Terax",
+        "title": "Terax++",
         "width": 800,
         "height": 600,
         "minWidth": 420,
@@ -35,7 +35,7 @@
   "bundle": {
     "active": true,
     "targets": "all",
-    "createUpdaterArtifacts": true,
+    "createUpdaterArtifacts": false,
     "copyright": "Copyright 2026 Crynta",
     "license": "Apache-2.0",
     "publisher": "Crynta",
