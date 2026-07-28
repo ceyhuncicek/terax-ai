@@ -119,6 +119,31 @@ export function repositoryContainsContext(
   return context === root || context.startsWith(prefix);
 }
 
+function canonicalContextPath(path: string): string {
+  const normalized = normalizedContextPath(path);
+  const windowsPath = /^[A-Za-z]:\//.test(normalized) || normalized.startsWith("//");
+  return windowsPath ? normalized.toLowerCase() : normalized;
+}
+
+/**
+ * A loaded repo may only be reused for the exact path it was resolved from.
+ * Repos can be nested, so a subdirectory of `activeRoot` may be the root of its
+ * own repo; any path we have not already resolved has to go through discovery
+ * to find its closest `.git`.
+ */
+export function canReuseResolvedRepo(input: {
+  activeRoot: string | null;
+  contextPath: string | null;
+  lastResolvedPath: string | null;
+}): boolean {
+  const { activeRoot, contextPath, lastResolvedPath } = input;
+  if (!contextPath || !lastResolvedPath) return false;
+  if (!repositoryContainsContext(activeRoot, contextPath)) return false;
+  return (
+    canonicalContextPath(contextPath) === canonicalContextPath(lastResolvedPath)
+  );
+}
+
 export function beginSourceControlRefresh<
   T extends RefreshableSourceControlState,
 >(current: T, contextPath: string, reuseCurrentRepository: boolean): T {
@@ -236,6 +261,8 @@ export function useSourceControl(
   const enabledRef = useRef(enabled);
   const lastRefreshAtRef = useRef(0);
   const resetWorkspaceKeyRef = useRef(workspaceKey);
+  // Context path the currently loaded repo was discovered from.
+  const lastResolvedPathRef = useRef<string | null>(null);
   const contextKey = sourceControlContextKey(workspaceKey, contextPath);
   const contextKeyRef = useRef(contextKey);
   contextKeyRef.current = contextKey;
@@ -254,6 +281,7 @@ export function useSourceControl(
     requestIdRef.current++;
     inflightRef.current = null;
     autoFetchByRepoRef.current.clear();
+    lastResolvedPathRef.current = null;
     setState({
       contextPath: null,
       repo: null,
@@ -294,6 +322,7 @@ export function useSourceControl(
 
       if (!contextPath) {
         if (!isCurrentRequest()) return;
+        lastResolvedPathRef.current = null;
         setState({
           contextPath: null,
           repo: null,
@@ -308,12 +337,22 @@ export function useSourceControl(
       }
 
       const activeRoot = stateRef.current.repo?.repoRoot ?? null;
-      const reusableRoot = repositoryContainsContext(activeRoot, contextPath)
+      const reusableRoot = canReuseResolvedRepo({
+        activeRoot,
+        contextPath,
+        lastResolvedPath: lastResolvedPathRef.current,
+      })
         ? activeRoot
         : null;
 
+      // Keep showing the loaded repo while a path inside it re-resolves: only
+      // discovery is skipped by `reusableRoot`, the panel should not blank out.
       setState((current) =>
-        beginSourceControlRefresh(current, contextPath, !!reusableRoot),
+        beginSourceControlRefresh(
+          current,
+          contextPath,
+          repositoryContainsContext(activeRoot, contextPath),
+        ),
       );
 
       try {
@@ -337,6 +376,7 @@ export function useSourceControl(
             const snapshot = await native.gitPanelSnapshot(contextPath);
             if (!isCurrentRequest()) return;
             if (!snapshot.repo) {
+              lastResolvedPathRef.current = null;
               setState((current) => ({
                 ...current,
                 repo: null,
@@ -354,6 +394,7 @@ export function useSourceControl(
           const snapshot = await native.gitPanelSnapshot(contextPath);
           if (!isCurrentRequest()) return;
           if (!snapshot.repo) {
+            lastResolvedPathRef.current = null;
             setState((current) => ({
               ...current,
               repo: null,
@@ -369,6 +410,7 @@ export function useSourceControl(
         }
 
         if (!repo) {
+          lastResolvedPathRef.current = null;
           setState((current) => ({
             ...current,
             repo: null,
@@ -403,6 +445,7 @@ export function useSourceControl(
         }
 
         if (!isCurrentRequest()) return;
+        lastResolvedPathRef.current = contextPath;
         setState((current) => ({
           ...current,
           repo,
@@ -414,6 +457,7 @@ export function useSourceControl(
         }));
       } catch (error) {
         if (!isCurrentRequest()) return;
+        lastResolvedPathRef.current = null;
         setState((current) => ({
           ...current,
           repo: null,
@@ -508,6 +552,7 @@ export function useSourceControl(
   useEffect(() => {
     if (!enabled) {
       requestIdRef.current++;
+      lastResolvedPathRef.current = null;
       setState({
         contextPath: null,
         repo: null,
@@ -522,8 +567,11 @@ export function useSourceControl(
     }
     setState((current) => ({ ...current, lastRemoteError: null }));
     const run = () => {
-      const root = stateRef.current.repo?.repoRoot;
-      const sameRepo = repositoryContainsContext(root ?? null, contextPath);
+      const sameRepo = canReuseResolvedRepo({
+        activeRoot: stateRef.current.repo?.repoRoot ?? null,
+        contextPath,
+        lastResolvedPath: lastResolvedPathRef.current,
+      });
       const fresh = Date.now() - lastRefreshAtRef.current < SC_STATUS_TTL_MS;
       if (fresh && sameRepo && stateRef.current.hasRepo) {
         setState((current) =>
