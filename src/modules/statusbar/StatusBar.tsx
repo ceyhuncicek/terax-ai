@@ -10,11 +10,13 @@ import {
   AiStatusBarControls,
 } from "@/modules/ai/components/AiStatusBarControls";
 import { LspStatusPill } from "@/modules/lsp";
+import type { SourceControlSummary } from "@/modules/source-control";
 import type { WorkspaceEnv } from "@/modules/workspace";
 import { IncognitoIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { CwdBreadcrumb } from "./CwdBreadcrumb";
 import { DiagnosticsBadge } from "./DiagnosticsBadge";
+import { GitSyncPill } from "./GitSyncPill";
 import { WorkspaceEnvSelector } from "./WorkspaceEnvSelector";
 
 type Props = {
@@ -29,6 +31,7 @@ type Props = {
   /** Only rendered when the AI panel is open and a key is loaded. */
   hasComposer: boolean;
   privateActive: boolean;
+  sourceControl: SourceControlSummary;
 };
 
 export function StatusBar({
@@ -41,6 +44,7 @@ export function StatusBar({
   onOpenAi,
   hasComposer,
   privateActive,
+  sourceControl,
 }: Props) {
   const panelOpen = useChatStore((s) => s.panelOpen);
 
@@ -49,6 +53,7 @@ export function StatusBar({
       <div className="flex min-w-0 flex-1 items-center gap-2">
         <WorkspaceEnvSelector onSelect={onWorkspaceChange} />
         <CwdBreadcrumb cwd={cwd} filePath={filePath} home={home} onCd={onCd} />
+        <GitSyncPill sourceControl={sourceControl} />
         <LspStatusPill filePath={filePath ?? null} />
         <DiagnosticsBadge filePath={filePath ?? null} />
         {privateActive ? (

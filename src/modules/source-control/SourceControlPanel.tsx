@@ -32,7 +32,6 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Spinner } from "@/components/ui/spinner";
-import { toast } from "sonner";
 import { Textarea } from "@/components/ui/textarea";
 import {
   Tooltip,
@@ -59,6 +58,7 @@ import {
   ArrowDown01Icon,
   ArrowUp01Icon,
   CheckmarkCircle01Icon,
+  CloudUploadIcon,
   Download01Icon,
   Folder01Icon,
   FolderCloudIcon,
@@ -70,25 +70,26 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import {
+  type KeyboardEvent,
   memo,
+  type ReactNode,
   useCallback,
   useEffect,
   useMemo,
   useRef,
   useState,
-  type KeyboardEvent,
-  type ReactNode,
 } from "react";
 import type { PanelImperativeHandle } from "react-resizable-panels";
+import { toast } from "sonner";
 import {
   CommitHistorySection,
   HISTORY_HEADER_PX,
 } from "./CommitHistorySection";
 import type { SourceControlSummary } from "./useSourceControl";
 import {
-  useSourceControlPanel,
   type CheckState,
   type SourceControlFileEntry,
+  useSourceControlPanel,
 } from "./useSourceControlPanel";
 
 type Props = {
@@ -507,6 +508,11 @@ export const SourceControlPanel = memo(function SourceControlPanel({
     !scm.actionBusy &&
     !sourceControl.busyAction;
   const canFetch = hasUpstream && !scm.actionBusy && !sourceControl.busyAction;
+  const canPublish =
+    !hasUpstream &&
+    !scm.status?.isDetached &&
+    !scm.actionBusy &&
+    !sourceControl.busyAction;
 
   const footerFeedback = useMemo(() => {
     if (scm.actionError)
@@ -557,6 +563,10 @@ export const SourceControlPanel = memo(function SourceControlPanel({
 
   const handlePull = useCallback(() => {
     void sourceControl.runRemoteAction("pull");
+  }, [sourceControl]);
+
+  const handlePublish = useCallback(() => {
+    void sourceControl.runRemoteAction("publish");
   }, [sourceControl]);
 
   const rows = useMemo<RowDescriptor[]>(() => {
@@ -714,6 +724,7 @@ export const SourceControlPanel = memo(function SourceControlPanel({
 
   const fetchBusy = sourceControl.busyAction === "fetch";
   const pullBusy = sourceControl.busyAction === "pull";
+  const publishBusy = sourceControl.busyAction === "publish";
 
   return (
     <TooltipProvider delayDuration={800} skipDelayDuration={300}>
@@ -757,6 +768,28 @@ export const SourceControlPanel = memo(function SourceControlPanel({
             ) : null}
           </div>
           <div className="flex shrink-0 items-center gap-0.5">
+            {!hasUpstream && !scm.status?.isDetached ? (
+              <IconActionButton
+                label={
+                  publishBusy
+                    ? "Publishing…"
+                    : "Publish branch and set upstream"
+                }
+                disabled={!canPublish}
+                onClick={handlePublish}
+                side="bottom"
+              >
+                {publishBusy ? (
+                  <Spinner className="size-3" />
+                ) : (
+                  <HugeiconsIcon
+                    icon={CloudUploadIcon}
+                    size={14}
+                    strokeWidth={1.85}
+                  />
+                )}
+              </IconActionButton>
+            ) : null}
             <IconActionButton
               label={fetchBusy ? "Fetching…" : "Fetch from remote"}
               disabled={!canFetch}

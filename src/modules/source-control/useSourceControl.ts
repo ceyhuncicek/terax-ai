@@ -1,7 +1,7 @@
 import {
-  native,
   type GitRepoInfo,
   type GitStatusSnapshot,
+  native,
 } from "@/modules/ai/lib/native";
 import { useWorkspaceEnvStore, workspaceScopeKey } from "@/modules/workspace";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -14,7 +14,7 @@ const FOCUS_REFRESH_MIN_INTERVAL_MS = 1500;
 const SC_STATUS_TTL_MS = 2000;
 
 export type SourceControlRefreshMode = "auto" | "always" | "never";
-export type SourceControlRemoteAction = "fetch" | "pull" | "push";
+export type SourceControlRemoteAction = "fetch" | "pull" | "push" | "publish";
 export type SourceControlRemoteActionMode =
   | "contextual"
   | SourceControlRemoteAction;
@@ -41,9 +41,7 @@ export type SourceControlSummary = {
   applyStatus: (
     updater: (status: GitStatusSnapshot) => GitStatusSnapshot,
   ) => void;
-  refresh: (options?: {
-    remote?: SourceControlRefreshMode;
-  }) => Promise<void>;
+  refresh: (options?: { remote?: SourceControlRefreshMode }) => Promise<void>;
   runRemoteAction: (
     mode?: SourceControlRemoteActionMode,
   ) => Promise<SourceControlRemoteActionResult>;
@@ -89,16 +87,40 @@ function getContextualAction(
 export function getSourceControlRemoteIndicator(
   summary: Pick<
     SourceControlSummary,
-    "hasRepo" | "upstream" | "ahead" | "behind" | "busyAction"
+    "hasRepo" | "repo" | "upstream" | "ahead" | "behind" | "busyAction"
   >,
 ): SourceControlRemoteIndicator {
-  if (!summary.hasRepo || !summary.upstream) {
-    return { visible: false, label: "", title: "", disabled: true, action: null };
+  if (!summary.hasRepo) {
+    return {
+      visible: false,
+      label: "",
+      title: "",
+      disabled: true,
+      action: null,
+    };
+  }
+  if (!summary.upstream) {
+    if (summary.repo?.isDetached) {
+      return {
+        visible: false,
+        label: "",
+        title: "",
+        disabled: true,
+        action: null,
+      };
+    }
+    return {
+      visible: true,
+      label: "Publish",
+      title: "Publish this branch to the remote and set it as upstream.",
+      disabled: summary.busyAction !== null,
+      action: "publish",
+    };
   }
   if (summary.ahead > 0 && summary.behind > 0) {
     return {
       visible: true,
-      label: `↑${summary.ahead} ↓${summary.behind}`,
+      label: `↓${summary.behind} ↑${summary.ahead}`,
       title:
         "Branch has diverged from upstream. Use Source Control or the terminal to resolve it.",
       disabled: true,
@@ -254,7 +276,11 @@ export function useSourceControl(
           ? activeRoot
           : undefined;
 
-      setState((current) => ({ ...current, isLoading: true, localError: null }));
+      setState((current) => ({
+        ...current,
+        isLoading: true,
+        localError: null,
+      }));
 
       try {
         let repo: GitRepoInfo | null;
@@ -328,8 +354,7 @@ export function useSourceControl(
           repo.upstream &&
           remoteMode !== "never" &&
           (remoteMode === "always" ||
-            Date.now() -
-              (autoFetchByRepoRef.current.get(repo.repoRoot) ?? 0) >=
+            Date.now() - (autoFetchByRepoRef.current.get(repo.repoRoot) ?? 0) >=
               AUTO_FETCH_THROTTLE_MS);
 
         if (shouldAutoFetch) {
@@ -405,7 +430,7 @@ export function useSourceControl(
       if (!repo || !status) {
         return { ok: false, action: null, blocked: "no-repo" };
       }
-      if (!status.upstream) {
+      if (!status.upstream && mode !== "publish") {
         return { ok: false, action: null, blocked: "missing-upstream" };
       }
 
@@ -424,6 +449,8 @@ export function useSourceControl(
           await native.gitFetch(repo.repoRoot);
           touchAutoFetch(autoFetchByRepoRef.current, repo.repoRoot);
           await native.gitPullFfOnly(repo.repoRoot);
+        } else if (action === "publish") {
+          await native.gitPublishBranch(repo.repoRoot);
         } else {
           await native.gitPush(repo.repoRoot);
         }

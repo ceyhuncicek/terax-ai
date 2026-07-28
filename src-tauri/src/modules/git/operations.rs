@@ -527,6 +527,80 @@ pub fn push(
     })
 }
 
+pub fn publish_branch(
+    registry: &WorkspaceRegistry,
+    repo_root: &str,
+    workspace: &WorkspaceEnv,
+) -> Result<GitPushResult> {
+    let repo_root = authorized_repo_root(registry, repo_root, workspace)?;
+    ensure_git_available(&repo_root.workspace)?;
+
+    let branch = git_stdout_line_opt(
+        &repo_root.workspace,
+        &repo_root.git_path,
+        ["rev-parse", "--abbrev-ref", "HEAD"],
+    )?
+    .ok_or(GitError::command(
+        "git publish failed",
+        "failed to resolve HEAD",
+    ))?;
+    if branch == "HEAD" {
+        return Err(GitError::command(
+            "git publish failed",
+            "cannot publish a detached HEAD",
+        ));
+    }
+
+    let upstream = git_stdout_line_opt(
+        &repo_root.workspace,
+        &repo_root.git_path,
+        ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"],
+    )?;
+    if upstream.is_some() {
+        return Err(GitError::command(
+            "git publish failed",
+            "branch already has an upstream; push instead",
+        ));
+    }
+
+    let remotes = git_stdout_lines(&repo_root.workspace, &repo_root.git_path, ["remote"])?;
+    // Prefer origin like git tooling does; a single non-origin remote is
+    // unambiguous, anything else needs an explicit choice in the terminal.
+    let remote = if remotes.iter().any(|r| r == "origin") {
+        "origin".to_string()
+    } else {
+        match remotes.as_slice() {
+            [only] => only.clone(),
+            [] => {
+                return Err(GitError::command(
+                    "git publish failed",
+                    "no remote configured",
+                ))
+            }
+            _ => {
+                return Err(GitError::command(
+                    "git publish failed",
+                    "multiple remotes configured; publish in the terminal",
+                ))
+            }
+        }
+    };
+
+    let output = run_git(
+        &repo_root.workspace,
+        Some(&repo_root.git_path),
+        ["push", "-u", remote.as_str(), branch.as_str()],
+        NETWORK_TIMEOUT_SECS,
+    )?;
+    ensure_success(&output, "git push -u failed")?;
+
+    Ok(GitPushResult {
+        remote: Some(remote),
+        branch: Some(branch),
+        pushed: true,
+    })
+}
+
 const LOG_FORMAT: &str = "%H%x1f%an%x1f%ae%x1f%at%x1f%P%x1f%s";
 const MAX_LOG_LIMIT: u32 = 200;
 

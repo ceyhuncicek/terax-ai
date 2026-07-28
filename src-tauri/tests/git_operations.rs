@@ -659,3 +659,92 @@ fn undo_last_commit_rejects_initial_commit() {
         .expect("log");
     assert_eq!(entries.len(), 1, "history must be untouched");
 }
+
+fn commit_initial(fx: &GitRepoFixture) {
+    fx.write_file("a.txt", "alpha\n");
+    fx.run_git(&["add", "a.txt"]);
+    fx.run_git(&["commit", "-q", "-m", "init"]);
+}
+
+fn add_bare_origin(fx: &GitRepoFixture) -> TempDir {
+    let bare = TempDir::new().expect("tempdir");
+    let out = std::process::Command::new("git")
+        .args(["init", "-q", "--bare"])
+        .current_dir(bare.path())
+        .output()
+        .expect("git on PATH");
+    assert!(out.status.success());
+    let bare_path = bare.path().to_string_lossy().to_string();
+    fx.run_git(&["remote", "add", "origin", &bare_path]);
+    bare
+}
+
+#[test]
+fn publish_branch_sets_upstream_on_bare_remote() {
+    if skip_if_no_git() {
+        return;
+    }
+    let fx = GitRepoFixture::new();
+    commit_initial(&fx);
+    let _bare = add_bare_origin(&fx);
+
+    let result =
+        operations::publish_branch(&fx.registry, &fx.repo_str(), &fx.workspace).expect("publish");
+    assert_eq!(result.remote.as_deref(), Some("origin"));
+    assert_eq!(result.branch.as_deref(), Some("main"));
+    assert!(result.pushed);
+
+    let out = std::process::Command::new("git")
+        .args(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"])
+        .current_dir(&fx.repo_path)
+        .output()
+        .expect("git on PATH");
+    assert!(out.status.success());
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "origin/main");
+}
+
+#[test]
+fn publish_branch_rejects_existing_upstream() {
+    if skip_if_no_git() {
+        return;
+    }
+    let fx = GitRepoFixture::new();
+    commit_initial(&fx);
+    let _bare = add_bare_origin(&fx);
+    fx.run_git(&["push", "-q", "-u", "origin", "main"]);
+
+    let err = operations::publish_branch(&fx.registry, &fx.repo_str(), &fx.workspace)
+        .map(|_| ())
+        .expect_err("must reject configured upstream");
+    assert!(err.to_string().contains("already has an upstream"));
+}
+
+#[test]
+fn publish_branch_rejects_detached_head() {
+    if skip_if_no_git() {
+        return;
+    }
+    let fx = GitRepoFixture::new();
+    commit_initial(&fx);
+    let _bare = add_bare_origin(&fx);
+    fx.run_git(&["checkout", "-q", "--detach"]);
+
+    let err = operations::publish_branch(&fx.registry, &fx.repo_str(), &fx.workspace)
+        .map(|_| ())
+        .expect_err("must reject detached HEAD");
+    assert!(err.to_string().contains("detached"));
+}
+
+#[test]
+fn publish_branch_rejects_missing_remote() {
+    if skip_if_no_git() {
+        return;
+    }
+    let fx = GitRepoFixture::new();
+    commit_initial(&fx);
+
+    let err = operations::publish_branch(&fx.registry, &fx.repo_str(), &fx.workspace)
+        .map(|_| ())
+        .expect_err("must reject missing remote");
+    assert!(err.to_string().contains("no remote configured"));
+}
