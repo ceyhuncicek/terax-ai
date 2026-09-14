@@ -1,6 +1,7 @@
 import {
   detectTerminalLinks,
-  type TerminalTextLink,
+  type TerminalLinkMatch,
+  type TerminalLinkTarget,
 } from "@/modules/terminal/ghostty/core/terminalLinks";
 import type {
   PackedTerminalViewport,
@@ -80,7 +81,7 @@ export class AdaptedGhosttyTerminalModel implements GhosttyTerminalModelApi {
     startRow: number;
     endRow: number;
     offsets: number[];
-    links: TerminalTextLink[];
+    links: readonly TerminalLinkMatch[];
   } | null = null;
   private blockMatch: { line: number; col: number; len: number } | null = null;
   private readonly directCellReader = new GhosttyRenderCellView();
@@ -370,7 +371,7 @@ export class AdaptedGhosttyTerminalModel implements GhosttyTerminalModelApi {
     return this.terminal.graphemeAt(state, row * state.cols + column);
   }
 
-  hyperlinkAtViewportCell(row: number, column: number): string | null {
+  linkAtViewportCell(row: number, column: number): TerminalLinkTarget | null {
     this.assertLive();
     if (
       row < 0 ||
@@ -385,7 +386,7 @@ export class AdaptedGhosttyTerminalModel implements GhosttyTerminalModelApi {
       state,
       row * state.cols + column,
     );
-    if (explicit) return explicit;
+    if (explicit) return { kind: "url", url: explicit };
     const origin = this.viewportOriginLine();
     let cache = this.plainLinks;
     if (
@@ -430,7 +431,7 @@ export class AdaptedGhosttyTerminalModel implements GhosttyTerminalModelApi {
     const offset = cache.offsets[(row - cache.startRow) * state.cols + column];
     return (
       cache.links.find((link) => offset >= link.start && offset < link.end)
-        ?.uri ?? null
+        ?.target ?? null
     );
   }
 

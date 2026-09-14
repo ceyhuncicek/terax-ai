@@ -7,14 +7,24 @@ import {
 import { initializeSessionGeneration as startSessionInitialization } from "@/modules/terminal/ghostty/sessionInitialization";
 import { replaceSessionSurface } from "@/modules/terminal/ghostty/replaceSessionSurface";
 import { openExternalUrl } from "@/lib/external-link";
+import {
+  resolveFileLinkPath,
+  type TerminalLinkTarget,
+} from "@/modules/terminal/ghostty/core/terminalLinks";
 import { ensureMonoFontsLoaded, resolveFontFamily } from "@/lib/fonts";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import type { TerminalBackendKind } from "@/modules/terminal/backend/contracts";
+import {
+  fileLinkOpenPayload,
+  OPEN_FILE_AT_EVENT,
+} from "@/modules/terminal/lib/openFileAt";
 import { PtyResizeScheduler } from "@/modules/terminal/lib/ptyResizeScheduler";
 import { subscribeTerminalResizeInteraction } from "@/modules/terminal/lib/terminalResizeInteraction";
 import { useTerminalFont } from "@/modules/terminal/lib/useTerminalFont";
 import type { TerminalSearchController } from "@/modules/terminal/search/TerminalSearchController";
 import { invoke } from "@tauri-apps/api/core";
+import { emit } from "@tauri-apps/api/event";
+import { homeDir } from "@tauri-apps/api/path";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { openPty, type PtySession } from "../lib/pty-bridge";
 import { writeTerminalClipboard } from "../lib/terminalClipboard";
@@ -44,6 +54,41 @@ type GhosttySessionFailure = {
   kind: "startup" | "renderer";
   message: string;
 };
+
+let cachedHomeDir: string | null = null;
+void homeDir()
+  .then((home) => {
+    cachedHomeDir = home.replace(/\\/g, "/").replace(/\/+$/, "");
+  })
+  .catch(() => {});
+
+function openTerminalLink(
+  target: TerminalLinkTarget,
+  session: GhosttySession,
+): void {
+  const restoreFocus = () => focusGhosttySession(session.leafId);
+  if (target.kind === "url") {
+    void openExternalUrl(target.url, restoreFocus);
+    return;
+  }
+  const path = resolveFileLinkPath(
+    target.path,
+    session.lastCwd ?? session.initialCwd ?? null,
+    cachedHomeDir,
+  );
+  if (!path) {
+    restoreFocus();
+    return;
+  }
+  // Focus belongs to the editor this opens, so the terminal only takes it back
+  // when nothing opened.
+  void emit(OPEN_FILE_AT_EVENT, fileLinkOpenPayload(target, path)).catch(
+    (error) => {
+      console.error("[terax] failed to open terminal file link:", error);
+      restoreFocus();
+    },
+  );
+}
 
 const DEFAULT_COLS = 80;
 const DEFAULT_ROWS = 24;
@@ -706,8 +751,8 @@ async function initializeSessionGeneration(
     onFirstFrame: () => mark("firstFrameMs"),
     onFrame: () => ghosttyBlocks(session.leafId)?.present(),
     onRequestFocus: () => focusGhosttySession(session.leafId),
-    onOpenLink: (uri: string) => {
-      void openExternalUrl(uri, () => focusGhosttySession(session.leafId));
+    onOpenLink: (target: TerminalLinkTarget) => {
+      openTerminalLink(target, session);
     },
   };
   session.surfaceOptions = surfaceBaseOptions;

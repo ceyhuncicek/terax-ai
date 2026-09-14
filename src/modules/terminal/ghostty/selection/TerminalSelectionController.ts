@@ -21,6 +21,8 @@ export type TerminalSelectionControllerOptions = {
   readonly target: HTMLElement;
   readonly cellSize: () => { readonly width: number; readonly height: number };
   readonly shouldIgnoreTarget: (target: EventTarget | null) => boolean;
+  /** Cmd/Ctrl over a link opens it instead of starting a drag-select. */
+  readonly linkActivationPending?: (event: PointerEvent) => boolean;
   readonly onChange: () => void;
 };
 
@@ -128,6 +130,7 @@ export class TerminalSelectionController {
   };
 
   private readonly handlePointerDown = (event: PointerEvent): void => {
+    if (this.options.linkActivationPending?.(event)) return;
     if (
       !shouldStartTerminalSelection(
         event,

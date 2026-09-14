@@ -121,6 +121,8 @@ function harness() {
     setTimeout,
     clearTimeout,
     matchMedia: () => media,
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
   });
   let resize = () => {};
   vi.stubGlobal(

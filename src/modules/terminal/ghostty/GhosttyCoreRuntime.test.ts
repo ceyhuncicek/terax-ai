@@ -621,10 +621,10 @@ describe("GhosttyCoreRuntime", () => {
       new TextEncoder().encode(`\x1b]8;;${uri}\x1b\\Terax\x1b]8;;\x1b\\ plain`),
     );
 
-    expect(model.hyperlinkAtViewportCell(0, 0)).toBe(uri);
-    expect(model.hyperlinkAtViewportCell(0, 4)).toBe(uri);
-    expect(model.hyperlinkAtViewportCell(0, 6)).toBeNull();
-    expect(model.hyperlinkAtViewportCell(-1, 0)).toBeNull();
+    expect(model.linkAtViewportCell(0, 0)).toEqual({ kind: "url", url: uri });
+    expect(model.linkAtViewportCell(0, 4)).toEqual({ kind: "url", url: uri });
+    expect(model.linkAtViewportCell(0, 6)).toBeNull();
+    expect(model.linkAtViewportCell(-1, 0)).toBeNull();
     model.dispose();
   });
 
@@ -636,15 +636,17 @@ describe("GhosttyCoreRuntime", () => {
     model.write(
       new TextEncoder().encode("日本 https://example.com/docs\r\nblank"),
     );
-    expect(model.hyperlinkAtViewportCell(0, 5)).toBe(
-      "https://example.com/docs",
-    );
-    expect(model.hyperlinkAtViewportCell(1, 3)).toBe(
-      "https://example.com/docs",
-    );
-    expect(model.hyperlinkAtViewportCell(1, 15)).toBeNull();
+    expect(model.linkAtViewportCell(0, 5)).toEqual({
+      kind: "url",
+      url: "https://example.com/docs",
+    });
+    expect(model.linkAtViewportCell(1, 3)).toEqual({
+      kind: "url",
+      url: "https://example.com/docs",
+    });
+    expect(model.linkAtViewportCell(1, 15)).toBeNull();
     model.write(new TextEncoder().encode("\x1bc"));
-    expect(model.hyperlinkAtViewportCell(0, 5)).toBeNull();
+    expect(model.linkAtViewportCell(0, 5)).toBeNull();
     runtime.dispose();
   });
 
