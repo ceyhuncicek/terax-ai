@@ -46,6 +46,7 @@ import {
   AiContentGenerator02Icon,
   Alert02Icon,
   ArrowDown01Icon,
+  ArrowTurnBackwardIcon,
   ArrowUp01Icon,
   CheckmarkCircle01Icon,
   CloudUploadIcon,
@@ -909,8 +910,11 @@ export const SourceControlPanel = memo(function SourceControlPanel({
                             actionBusy={scm.actionBusy}
                             headerCheckState={scm.headerCheckState}
                             repoRoot={scm.repo?.repoRoot ?? null}
+                            unstagedCount={scm.unstagedEntries.length}
+                            statusTruncated={scm.status?.truncated ?? false}
                             onFocusRow={setFocusedRowKey}
                             onToggleAll={scm.toggleAll}
+                            onDiscardAll={scm.requestDiscardAll}
                             onSelectFile={scm.selectFile}
                             onToggleStageFile={scm.toggleStageFile}
                             onDiscardFile={scm.requestDiscardFile}
@@ -1038,8 +1042,11 @@ type RowRendererProps = {
   actionBusy: string | null;
   headerCheckState: CheckState;
   repoRoot: string | null;
+  unstagedCount: number;
+  statusTruncated: boolean;
   onFocusRow: (key: string | null) => void;
   onToggleAll: () => Promise<void> | void;
+  onDiscardAll: () => void;
   onSelectFile: (entry: SourceControlFileEntry) => Promise<void>;
   onToggleStageFile: (entry: SourceControlFileEntry) => Promise<void>;
   onDiscardFile: (entry: SourceControlFileEntry) => void;
@@ -1081,10 +1088,20 @@ function ListHeader({
   row,
   actionBusy,
   headerCheckState,
+  unstagedCount,
+  statusTruncated,
   onToggleAll,
+  onDiscardAll,
 }: RowRendererProps & {
   row: Extract<RowDescriptor, { kind: "list-header" }>;
 }) {
+  // A truncated status carries no complete path list, so a path-based discard
+  // would silently leave files modified.
+  const discardAllDisabled =
+    actionBusy !== null || unstagedCount === 0 || statusTruncated;
+  const discardAllLabel = statusTruncated
+    ? "Cannot discard all changes: the change list is truncated"
+    : "Discard all changes";
   return (
     <div className="flex h-7 items-center gap-2 px-3">
       <span className="text-[10.5px] font-semibold uppercase tracking-[0.16em] text-muted-foreground/85">
@@ -1093,16 +1110,30 @@ function ListHeader({
       <span className="inline-flex h-4 min-w-4 items-center justify-center rounded-full border border-border/60 px-1 text-[9.5px] font-semibold tabular-nums text-muted-foreground">
         {row.count}
       </span>
-      <label className="ml-auto flex shrink-0 cursor-pointer select-none items-center gap-1.5 text-[10.5px] font-medium text-muted-foreground hover:text-foreground">
-        <span>All</span>
-        <Checkbox
-          aria-label="Stage all changes"
-          checked={checkboxValue(headerCheckState)}
-          disabled={actionBusy !== null}
-          onCheckedChange={() => void onToggleAll()}
-          className="size-3.5"
-        />
-      </label>
+      <div className="ml-auto flex shrink-0 items-center gap-1.5">
+        <IconActionButton
+          label={discardAllLabel}
+          disabled={discardAllDisabled}
+          side="top"
+          onClick={onDiscardAll}
+        >
+          <HugeiconsIcon
+            icon={ArrowTurnBackwardIcon}
+            size={11}
+            strokeWidth={1.9}
+          />
+        </IconActionButton>
+        <label className="flex shrink-0 cursor-pointer select-none items-center gap-1.5 text-[10.5px] font-medium text-muted-foreground hover:text-foreground">
+          <span>All</span>
+          <Checkbox
+            aria-label="Stage all changes"
+            checked={checkboxValue(headerCheckState)}
+            disabled={actionBusy !== null}
+            onCheckedChange={() => void onToggleAll()}
+            className="size-3.5"
+          />
+        </label>
+      </div>
     </div>
   );
 }
