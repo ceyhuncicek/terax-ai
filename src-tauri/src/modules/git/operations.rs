@@ -1128,16 +1128,54 @@ pub fn list_branches(
     .flatten();
     let is_detached_head = current_branch.as_deref() == Some("HEAD");
 
+    // for-each-ref only walks refs, so a detached HEAD has no ref to list. Keep
+    // the pseudo-entry `git branch` would have shown so the panel still marks
+    // where HEAD is.
+    if is_detached_head {
+        let head_sha = git_stdout_line_opt(
+            &repo_root.workspace,
+            &repo_root.git_path,
+            ["rev-parse", "HEAD"],
+        )
+        .ok()
+        .flatten();
+        if let Some(sha) = head_sha {
+            let short = if sha.len() >= 7 { &sha[..7] } else { sha.as_str() };
+            let committer_date = git_stdout_line_opt(
+                &repo_root.workspace,
+                &repo_root.git_path,
+                ["log", "-1", "--format=%ct", "HEAD"],
+            )
+            .ok()
+            .flatten()
+            .and_then(|v| v.trim().parse::<i64>().ok());
+            branches.push(GitBranchEntry {
+                name: format!("(HEAD detached at {short})"),
+                kind: "local".into(),
+                worktree_path: None,
+                is_head: true,
+                is_detached: true,
+                committer_date,
+            });
+        }
+    }
+
     if let Ok(lines) = git_stdout_lines(
         &repo_root.workspace,
         &repo_root.git_path,
-        ["branch", "--format=%(refname:short)%00%(HEAD)"],
+        [
+            "for-each-ref",
+            "--sort=-committerdate",
+            "--format=%(refname:short)%00%(HEAD)%00%(committerdate:unix)",
+            "refs/heads",
+        ],
     ) {
         for line in &lines {
             let mut parts = line.split('\0');
             let name = parts.next().unwrap_or("").to_string();
             let head_marker = parts.next().unwrap_or("");
             let is_head = head_marker == "*";
+            let committer_date = parts.next().and_then(|v| v.trim().parse::<i64>().ok());
             if !name.is_empty() {
                 branches.push(GitBranchEntry {
                     name,
@@ -1145,8 +1183,39 @@ pub fn list_branches(
                     worktree_path: None,
                     is_head,
                     is_detached: is_head && is_detached_head,
+                    committer_date,
                 });
             }
+        }
+    }
+
+    if let Ok(lines) = git_stdout_lines(
+        &repo_root.workspace,
+        &repo_root.git_path,
+        [
+            "for-each-ref",
+            "--sort=-committerdate",
+            "--format=%(refname:short)%00%(committerdate:unix)%00%(symref)",
+            "refs/remotes",
+        ],
+    ) {
+        for line in &lines {
+            let mut parts = line.split('\0');
+            let name = parts.next().unwrap_or("").to_string();
+            let committer_date = parts.next().and_then(|v| v.trim().parse::<i64>().ok());
+            // refs/remotes/<remote>/HEAD is a symbolic alias, not a branch.
+            let symref = parts.next().unwrap_or("").trim();
+            if name.is_empty() || !symref.is_empty() {
+                continue;
+            }
+            branches.push(GitBranchEntry {
+                name,
+                kind: "remote".into(),
+                worktree_path: None,
+                is_head: false,
+                is_detached: false,
+                committer_date,
+            });
         }
     }
 
@@ -1209,8 +1278,10 @@ pub fn list_branches(
                 && !existing.is_head;
             if should_replace {
                 let is_head = existing.is_head || b.is_head;
+                let committer_date = b.committer_date.or(existing.committer_date);
                 deduped[existing_idx] = GitBranchEntry {
                     is_head,
+                    committer_date,
                     ..b
                 };
             } else if b.is_head && !existing.is_head {
@@ -1224,10 +1295,17 @@ pub fn list_branches(
         }
     }
 
+    // Most recently committed first inside each group, like the VS Code branch
+    // picker: the branch you were last working on is the one you want next.
     deduped.sort_by(|a, b| {
-        let kind_ord = |k: &str| if k == "local" { 0u8 } else { 1u8 };
+        let kind_ord = |k: &str| match k {
+            "local" => 0u8,
+            "worktree" => 1,
+            _ => 2,
+        };
         kind_ord(&a.kind)
             .cmp(&kind_ord(&b.kind))
+            .then_with(|| b.committer_date.cmp(&a.committer_date))
             .then_with(|| a.name.cmp(&b.name))
     });
 
@@ -1255,7 +1333,63 @@ fn push_worktree(
         worktree_path: Some(path),
         is_head: false,
         is_detached: branch.is_none(),
+        committer_date: None,
     });
+}
+
+/// Check out a remote-tracking ref (`origin/feature`) the way VS Code does:
+/// reuse the local branch when it already exists, otherwise create it tracking
+/// the remote.
+pub fn checkout_tracking_branch(
+    registry: &WorkspaceRegistry,
+    repo_root: &str,
+    remote_ref: &str,
+    workspace: &WorkspaceEnv,
+) -> Result<String> {
+    let repo_root = authorized_repo_root(registry, repo_root, workspace)?;
+    ensure_git_available(&repo_root.workspace)?;
+    if remote_ref.starts_with('-') || remote_ref.is_empty() {
+        return Err(GitError::InvalidPath(remote_ref.into()));
+    }
+    let local_name = remote_ref
+        .split_once('/')
+        .map(|(_, rest)| rest)
+        .unwrap_or(remote_ref);
+    if local_name.is_empty() || local_name.starts_with('-') {
+        return Err(GitError::InvalidPath(remote_ref.into()));
+    }
+
+    let local_exists = run_git(
+        &repo_root.workspace,
+        Some(&repo_root.git_path),
+        [
+            "show-ref",
+            "--verify",
+            "--quiet",
+            &format!("refs/heads/{local_name}"),
+        ],
+        DEFAULT_TIMEOUT_SECS,
+    )
+    .map(|output| output.exit_code == Some(0))
+    .unwrap_or(false);
+
+    let output = if local_exists {
+        run_git(
+            &repo_root.workspace,
+            Some(&repo_root.git_path),
+            ["checkout", local_name],
+            DEFAULT_TIMEOUT_SECS,
+        )?
+    } else {
+        run_git(
+            &repo_root.workspace,
+            Some(&repo_root.git_path),
+            ["checkout", "--track", "-b", local_name, remote_ref],
+            DEFAULT_TIMEOUT_SECS,
+        )?
+    };
+    ensure_success(&output, "git checkout failed")?;
+    Ok(local_name.to_string())
 }
 
 pub fn checkout_branch(

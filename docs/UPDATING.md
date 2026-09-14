@@ -47,12 +47,15 @@ Then replace `/Applications/Terax++.app` with the freshly built bundle.
   upstream also edits.
 - **Settings sections** (`src/settings/sections/*`, `src/modules/settings/store.ts`) —
   our added settings entries collide with upstream additions in the same lists.
+- **`src/modules/source-control/SourceControlPanel.tsx`** — the branch picker replaces
+  upstream's `BranchDropdown`, and the commit history panel wraps the changes list in a
+  `ResizablePanelGroup`. Both sit in code upstream keeps editing.
 
-## Keep the stack at five commits
+## Keep the stack at six commits
 
-The patch stack is deliberately five logical commits (commit history, statusbar sync
-indicator, split diff view, branding, docs). Fewer, well-scoped commits mean fewer
-conflict stops on every rebase.
+The patch stack is deliberately six logical commits (commit history, statusbar sync
+indicator, split diff view, branding, docs, branch picker). Fewer, well-scoped commits
+mean fewer conflict stops on every rebase.
 
 Do not append follow-up fix commits. Instead commit them as fixups and fold them in:
 
