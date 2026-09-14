@@ -257,7 +257,13 @@ async function harness() {
     return value;
   };
   vi.stubGlobal("document", { createElement: element });
-  vi.stubGlobal("window", { devicePixelRatio: 1, setTimeout, clearTimeout });
+  vi.stubGlobal("window", {
+    devicePixelRatio: 1,
+    setTimeout,
+    clearTimeout,
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+  });
   vi.stubGlobal(
     "ResizeObserver",
     class {

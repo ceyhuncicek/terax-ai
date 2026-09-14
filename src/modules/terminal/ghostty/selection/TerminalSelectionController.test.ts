@@ -339,3 +339,95 @@ describe("terminal selection geometry", () => {
     expect(selectionContains(selection, { line: 1, column: 6 })).toBe(false);
   });
 });
+
+describe("modifier-click link activation", () => {
+  function harness(linkUnderPointer: boolean) {
+    const listeners = new Map<string, (event: PointerEvent) => void>();
+    const setSelection = vi.fn();
+    const model = {
+      cols: 80,
+      rows: 24,
+      modes: () => ({ mouseTracking: false }),
+      bufferLineAtViewportRow: (row: number) => row,
+      wordRangeAt: () => ({ start: 0, end: 0 }),
+      lineEndColumn: () => 0,
+      trackedSelection: () => null,
+      setSelection,
+    } as unknown as GhosttyTerminalModelApi;
+    const target = {
+      addEventListener: (type: string, handler: (e: PointerEvent) => void) => {
+        listeners.set(type, handler);
+      },
+      removeEventListener: vi.fn(),
+      setPointerCapture: vi.fn(),
+      hasPointerCapture: () => false,
+      releasePointerCapture: vi.fn(),
+      getBoundingClientRect: () => ({
+        left: 0,
+        top: 0,
+        right: 800,
+        bottom: 480,
+      }),
+    } as unknown as HTMLElement;
+    const controller = new TerminalSelectionController({
+      model,
+      target,
+      cellSize: () => ({ width: 10, height: 20 }),
+      shouldIgnoreTarget: () => false,
+      linkActivationPending: (event) => linkUnderPointer && event.metaKey,
+      onChange: vi.fn(),
+    });
+    return { controller, listeners, setSelection, target };
+  }
+
+  function pointerDown(overrides: Partial<PointerEvent> = {}) {
+    return {
+      pointerId: 1,
+      button: 0,
+      buttons: 1,
+      detail: 1,
+      clientX: 45,
+      clientY: 25,
+      shiftKey: false,
+      altKey: false,
+      metaKey: false,
+      ctrlKey: false,
+      defaultPrevented: false,
+      target: null,
+      preventDefault: vi.fn(),
+      stopPropagation: vi.fn(),
+      ...overrides,
+    } as unknown as PointerEvent;
+  }
+
+  it("yields the pointer to a modifier click over a link", () => {
+    const { controller, listeners, setSelection, target } = harness(true);
+    const event = pointerDown({ metaKey: true });
+    listeners.get("pointerdown")?.(event);
+    expect(event.preventDefault).not.toHaveBeenCalled();
+    expect(target.setPointerCapture).not.toHaveBeenCalled();
+    expect(setSelection).not.toHaveBeenCalled();
+    expect(controller.value).toBeNull();
+    controller.dispose();
+  });
+
+  it("still starts a drag-select for a plain click", () => {
+    const { controller, listeners, setSelection, target } = harness(true);
+    const event = pointerDown();
+    listeners.get("pointerdown")?.(event);
+    expect(event.preventDefault).toHaveBeenCalled();
+    expect(target.setPointerCapture).toHaveBeenCalledWith(1);
+    expect(setSelection).toHaveBeenCalled();
+    controller.dispose();
+  });
+
+  it("still word-selects on a modifier double click away from a link", () => {
+    const { controller, listeners, setSelection } = harness(false);
+    const event = pointerDown({ metaKey: true, detail: 2 });
+    listeners.get("pointerdown")?.(event);
+    expect(event.preventDefault).toHaveBeenCalled();
+    expect(setSelection).toHaveBeenCalled();
+    expect(controller.value).not.toBeNull();
+    controller.dispose();
+  });
+});

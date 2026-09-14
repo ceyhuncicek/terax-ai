@@ -90,6 +90,8 @@ import {
   isTerminalSurfaceTarget,
   leafIds,
   navigateFocusedBlocks,
+  OPEN_FILE_AT_EVENT,
+  type OpenFileAtPayload,
   type PaneBounds,
   ptyIdForLeaf,
   type TerminalPaneHandle,
@@ -1340,6 +1342,38 @@ export default function App() {
     },
     [openFileTab],
   );
+
+  // Declared here rather than beside the terax:open-file listener because it
+  // routes through openControlFile, which is defined just above.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let disposed = false;
+    void (async () => {
+      const off = await listen<OpenFileAtPayload>(
+        OPEN_FILE_AT_EVENT,
+        ({ payload }) => {
+          // Without a line there is nothing to jump to, so markdown keeps the
+          // rendered view the plain open route gives it.
+          if (payload.line === undefined && isMarkdownPath(payload.path)) {
+            handleOpenFile(payload.path, true);
+            return;
+          }
+          openControlFile({
+            path: payload.path,
+            line: payload.line,
+            focus: true,
+            spaceId: useSpaces.getState().activeId ?? DEFAULT_SPACE_ID,
+          });
+        },
+      );
+      if (disposed) off();
+      else unlisten = off;
+    })();
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [handleOpenFile, openControlFile]);
 
   useControlBridge({
     ready: spacesHydrated && launchCwdResolved,

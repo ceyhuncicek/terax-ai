@@ -4,6 +4,11 @@ export {
   useAgentActivityStore,
 } from "./lib/agentActivity";
 export {
+  fileLinkOpenPayload,
+  OPEN_FILE_AT_EVENT,
+  type OpenFileAtPayload,
+} from "./lib/openFileAt";
+export {
   findLeafCwd,
   hasLeaf,
   isLeaf,
