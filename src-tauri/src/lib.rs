@@ -309,6 +309,7 @@ pub fn run() {
             git::commands::git_remote_url,
             git::commands::git_list_branches,
             git::commands::git_checkout_branch,
+            git::commands::git_checkout_tracking_branch,
             shell::shell_run_command,
             shell::shell_session_open,
             shell::shell_session_run,

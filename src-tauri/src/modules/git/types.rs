@@ -119,10 +119,11 @@ pub struct GitPushResult {
 #[serde(rename_all = "camelCase")]
 pub struct GitBranchEntry {
     pub name: String,
-    pub kind: String, // "local" | "worktree"
+    pub kind: String, // "local" | "worktree" | "remote"
     pub worktree_path: Option<String>,
     pub is_head: bool,
     pub is_detached: bool,
+    pub committer_date: Option<i64>,
 }
 
 #[derive(Serialize)]
@@ -338,6 +339,7 @@ mod serde_shape_tests {
             worktree_path: None,
             is_head: false,
             is_detached: false,
+            committer_date: Some(1_700_000_000),
         };
         let list = GitBranchListResult {
             branches: vec![branch],
@@ -351,6 +353,7 @@ mod serde_shape_tests {
                     "worktreePath": null,
                     "isHead": false,
                     "isDetached": false,
+                    "committerDate": 1_700_000_000,
                 }],
             })
         );

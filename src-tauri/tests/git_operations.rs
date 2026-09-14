@@ -748,3 +748,214 @@ fn publish_branch_rejects_missing_remote() {
         .expect_err("must reject missing remote");
     assert!(err.to_string().contains("no remote configured"));
 }
+
+fn commit_at(fx: &GitRepoFixture, date: &str, message: &str) {
+    let out = std::process::Command::new("git")
+        .args(["commit", "-q", "-m", message])
+        .env("GIT_COMMITTER_DATE", date)
+        .env("GIT_AUTHOR_DATE", date)
+        .current_dir(&fx.repo_path)
+        .output()
+        .expect("git commit");
+    assert!(out.status.success(), "git commit failed: {out:?}");
+}
+
+#[test]
+fn list_branches_orders_locals_by_most_recent_commit() {
+    if skip_if_no_git() {
+        return;
+    }
+    let fx = GitRepoFixture::new();
+    fx.write_file("a.txt", "a\n");
+    fx.run_git(&["add", "."]);
+    commit_at(&fx, "2020-01-01T00:00:00Z", "on main");
+
+    fx.run_git(&["checkout", "-q", "-b", "older"]);
+    fx.write_file("b.txt", "b\n");
+    fx.run_git(&["add", "."]);
+    commit_at(&fx, "2021-01-01T00:00:00Z", "on older");
+
+    fx.run_git(&["checkout", "-q", "-b", "newest"]);
+    fx.write_file("c.txt", "c\n");
+    fx.run_git(&["add", "."]);
+    commit_at(&fx, "2022-01-01T00:00:00Z", "on newest");
+
+    let result = operations::list_branches(&fx.registry, &fx.repo_str(), &fx.workspace)
+        .expect("list_branches");
+    let locals: Vec<&str> = result
+        .branches
+        .iter()
+        .filter(|b| b.kind == "local")
+        .map(|b| b.name.as_str())
+        .collect();
+    assert_eq!(locals, vec!["newest", "older", "main"]);
+
+    let newest = result
+        .branches
+        .iter()
+        .find(|b| b.name == "newest")
+        .expect("newest present");
+    assert_eq!(newest.committer_date, Some(1640995200));
+}
+
+#[test]
+fn list_branches_includes_remotes_and_skips_remote_head() {
+    if skip_if_no_git() {
+        return;
+    }
+    let fx = GitRepoFixture::new();
+    fx.write_file("a.txt", "a\n");
+    fx.run_git(&["add", "."]);
+    commit_at(&fx, "2020-01-01T00:00:00Z", "init");
+
+    let remote = TempDir::new().unwrap();
+    let remote_path = std::fs::canonicalize(remote.path()).unwrap();
+    let out = std::process::Command::new("git")
+        .args(["init", "-q", "--bare", "."])
+        .current_dir(&remote_path)
+        .output()
+        .expect("git init bare");
+    assert!(out.status.success());
+
+    fx.run_git(&["remote", "add", "origin", remote_path.to_str().unwrap()]);
+    fx.run_git(&["push", "-q", "-u", "origin", "main"]);
+    fx.run_git(&["remote", "set-head", "origin", "-a"]);
+
+    let result = operations::list_branches(&fx.registry, &fx.repo_str(), &fx.workspace)
+        .expect("list_branches");
+
+    let remote_branch = result
+        .branches
+        .iter()
+        .find(|b| b.name == "origin/main")
+        .expect("origin/main present");
+    assert_eq!(remote_branch.kind, "remote");
+    assert!(!remote_branch.is_head);
+    assert!(remote_branch.committer_date.is_some());
+    assert!(result.branches.iter().all(|b| b.name != "origin/HEAD"));
+
+    // remotes sort after locals
+    let first_remote = result
+        .branches
+        .iter()
+        .position(|b| b.kind == "remote")
+        .expect("remote present");
+    let last_local = result
+        .branches
+        .iter()
+        .rposition(|b| b.kind != "remote")
+        .expect("local present");
+    assert!(last_local < first_remote);
+}
+
+#[test]
+fn checkout_tracking_branch_creates_then_reuses_local_branch() {
+    if skip_if_no_git() {
+        return;
+    }
+    let fx = GitRepoFixture::new();
+    fx.write_file("a.txt", "a\n");
+    fx.run_git(&["add", "."]);
+    commit_at(&fx, "2020-01-01T00:00:00Z", "init");
+
+    let remote = TempDir::new().unwrap();
+    let remote_path = std::fs::canonicalize(remote.path()).unwrap();
+    let out = std::process::Command::new("git")
+        .args(["init", "-q", "--bare", "."])
+        .current_dir(&remote_path)
+        .output()
+        .expect("git init bare");
+    assert!(out.status.success());
+
+    fx.run_git(&["remote", "add", "origin", remote_path.to_str().unwrap()]);
+    fx.run_git(&["push", "-q", "-u", "origin", "main"]);
+    fx.run_git(&["checkout", "-q", "-b", "feature"]);
+    fx.write_file("b.txt", "b\n");
+    fx.run_git(&["add", "."]);
+    commit_at(&fx, "2021-01-01T00:00:00Z", "feature work");
+    fx.run_git(&["push", "-q", "origin", "feature"]);
+    fx.run_git(&["checkout", "-q", "main"]);
+    fx.run_git(&["branch", "-q", "-D", "feature"]);
+
+    let created = operations::checkout_tracking_branch(
+        &fx.registry,
+        &fx.repo_str(),
+        "origin/feature",
+        &fx.workspace,
+    )
+    .expect("checkout tracking");
+    assert_eq!(created, "feature");
+
+    let info = operations::resolve_repo(&fx.registry, &fx.repo_str(), &fx.workspace)
+        .expect("resolve_repo")
+        .expect("repo present");
+    assert_eq!(info.branch, "feature");
+    assert_eq!(info.upstream.as_deref(), Some("origin/feature"));
+
+    fx.run_git(&["checkout", "-q", "main"]);
+    let reused = operations::checkout_tracking_branch(
+        &fx.registry,
+        &fx.repo_str(),
+        "origin/feature",
+        &fx.workspace,
+    )
+    .expect("checkout tracking again");
+    assert_eq!(reused, "feature");
+}
+
+#[test]
+fn checkout_tracking_branch_rejects_unsafe_refs() {
+    if skip_if_no_git() {
+        return;
+    }
+    let fx = GitRepoFixture::new();
+
+    let err_empty =
+        operations::checkout_tracking_branch(&fx.registry, &fx.repo_str(), "", &fx.workspace)
+            .unwrap_err();
+    assert!(matches!(err_empty, GitError::InvalidPath(p) if p.is_empty()));
+
+    let err_dash =
+        operations::checkout_tracking_branch(&fx.registry, &fx.repo_str(), "-f", &fx.workspace)
+            .unwrap_err();
+    assert!(matches!(err_dash, GitError::InvalidPath(p) if p == "-f"));
+
+    let err_nested = operations::checkout_tracking_branch(
+        &fx.registry,
+        &fx.repo_str(),
+        "origin/-f",
+        &fx.workspace,
+    )
+    .unwrap_err();
+    assert!(matches!(err_nested, GitError::InvalidPath(p) if p == "origin/-f"));
+}
+
+#[test]
+fn list_branches_marks_detached_head() {
+    if skip_if_no_git() {
+        return;
+    }
+    let fx = GitRepoFixture::new();
+    fx.write_file("a.txt", "a\n");
+    fx.run_git(&["add", "."]);
+    commit_at(&fx, "2020-01-01T00:00:00Z", "init");
+    fx.run_git(&["checkout", "-q", "--detach", "HEAD"]);
+
+    let result = operations::list_branches(&fx.registry, &fx.repo_str(), &fx.workspace)
+        .expect("list_branches");
+    let head = result
+        .branches
+        .iter()
+        .find(|b| b.is_head)
+        .expect("detached head entry present");
+    assert!(head.is_detached);
+    assert!(head.name.starts_with("(HEAD detached at "));
+    assert_eq!(head.committer_date, Some(1577836800));
+
+    let main = result
+        .branches
+        .iter()
+        .find(|b| b.name == "main")
+        .expect("main still listed");
+    assert!(!main.is_head);
+}

@@ -325,6 +325,21 @@ pub async fn git_list_branches(
 }
 
 #[tauri::command]
+pub async fn git_checkout_tracking_branch(
+    repo_root: String,
+    remote_ref: String,
+    workspace: Option<WorkspaceEnv>,
+    app: AppHandle,
+) -> Result<String, String> {
+    let workspace = WorkspaceEnv::from_option(workspace);
+    blocking(app, move |r| {
+        operations::checkout_tracking_branch(r, &repo_root, &remote_ref, &workspace)
+            .map_err(Into::into)
+    })
+    .await
+}
+
+#[tauri::command]
 pub async fn git_checkout_branch(
     repo_root: String,
     branch: String,
