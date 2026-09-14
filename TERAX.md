@@ -65,7 +65,11 @@ and ignore delayed programmatic scroll events. Hidden output does no surface DOM
 or search-mask work until presentation resumes.
 
 Terminal clipboard shortcuts use the native text clipboard plugin on all desktop
-platforms. Context clicks expose the selected text through the input element to
+platforms. An image-only clipboard carries no text, so the paste shortcut and the
+webview paste event fall back to `clipboard_read_image_to_temp` and bracketed-paste
+the temp PNG path it returns, the same path-as-attachment route file drops use so a
+CLI agent resolves it to an image. Text pastes never make that second call.
+Context clicks expose the selected text through the input element to
 restore the webview's native text menu; no persistent DOM scrollback is maintained.
 Unclaimed macOS Command shortcuts reach the native menu after explicit clipboard,
 block-editor, and readline bindings, including when Kitty keyboard mode is active.
@@ -168,6 +172,7 @@ establish production readiness, platform parity, or multi-day resource stability
 - `net::*` (`ai_http_request`, `ai_http_stream`, `lm_ping`): AI HTTP proxy with SSRF guard; keeps provider calls and local-model pings off the webview.
 - `secrets::secrets_*`: OS keychain via the `keyring` crate. Service constant `terax-ai`. Linux uses a file-based fallback gated behind `#[cfg(target_os = "linux")]`.
 - `open_settings_window`: separate webview window for Settings (optional `tab` arg deep-links a section).
+- `clipboard_image::clipboard_read_image_to_temp`: macOS only, takes no arguments. Spills an image on `NSPasteboard` to `$TMPDIR/terax-clipboard/terax-paste-<nanos>-<n>.png` (0600, dir 0700, created by `mkdir` so a symlink planted at that path is refused rather than followed) and returns the path; non-image clipboards return `None`, not an error. Non-PNG pasteboard types transcode through `NSBitmapImageRep`, so no image crate is pulled in. Generated paths are restricted to the `SAFE_PATH` character class of `quoteShellPath.ts` (falling back to `/tmp` if the system temp dir is not), because a quoted path stops resolving as an image attachment. Files older than 24 h are pruned on each call.
 - `vibrancy::window_*`: native window backdrop (`window_backdrop_kind`, `window_set_backdrop`). macOS gets `NSVisualEffectMaterial::UnderWindowBackground`, Windows 11 gets Mica (gated on build >= 22000 via `RtlGetVersion`, since `apply_mica` fails on Windows 10), Linux reports `none` because blur there belongs to the compositor. The `window-vibrancy` crate is a macOS/Windows-only dependency so Linux builds never pull it.
 
 ### PTY shell integration

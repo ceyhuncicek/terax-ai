@@ -1,5 +1,10 @@
+import { hasClipboardImage } from "@/modules/terminal/lib/clipboardImage";
 import { terminalReadlineSequence } from "@/modules/terminal/lib/keymap";
-import { readTerminalClipboard } from "@/modules/terminal/lib/terminalClipboard";
+import { formatDroppedPaths } from "@/modules/terminal/lib/quoteShellPath";
+import {
+  readTerminalClipboard,
+  readTerminalClipboardImage,
+} from "@/modules/terminal/lib/terminalClipboard";
 import {
   Key,
   KeyAction,
@@ -234,7 +239,7 @@ export class GhosttyInputController {
 
     if (isPasteShortcut(event, this.isMac)) {
       consume(event);
-      void readTerminalClipboard().then((text) => this.paste(text));
+      void this.pasteClipboard();
       return;
     }
     if (isCopyShortcut(event, this.isMac) && this.options.onCopy()) {
@@ -382,10 +387,31 @@ export class GhosttyInputController {
 
   private readonly handlePaste = (event: ClipboardEvent): void => {
     const text = event.clipboardData?.getData("text/plain") ?? "";
-    if (!text) return;
+    if (!text) {
+      if (!hasClipboardImage(event.clipboardData)) return;
+      consume(event);
+      void this.pasteClipboardImage();
+      return;
+    }
     consume(event);
     this.paste(text);
   };
+
+  // An image-only clipboard costs one extra IPC call; text pastes never pay it.
+  private async pasteClipboard(): Promise<void> {
+    const text = await readTerminalClipboard();
+    if (text) {
+      this.paste(text);
+      return;
+    }
+    await this.pasteClipboardImage();
+  }
+
+  private async pasteClipboardImage(): Promise<void> {
+    if (this.disposed) return;
+    const path = await readTerminalClipboardImage();
+    if (path) this.paste(formatDroppedPaths([path]));
+  }
 
   private readonly handleFocus = (): void => {
     if (this.options.model.modes().focusReporting) {

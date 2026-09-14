@@ -1,11 +1,20 @@
 import type { GhosttyTerminalModelApi } from "@/modules/terminal/ghostty/GhosttyTerminalModel";
 import { readFile } from "node:fs/promises";
 import { TeraxGhostty } from "@terax/ghostty-core/adapted";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   GhosttyInputController,
   terminalMouseModifiers,
 } from "./GhosttyInputController";
+
+const clipboard = vi.hoisted(() => ({
+  readTerminalClipboard: vi.fn<() => Promise<string>>(async () => ""),
+  readTerminalClipboardImage: vi.fn<() => Promise<string | null>>(
+    async () => null,
+  ),
+  writeTerminalClipboard: vi.fn(),
+}));
+vi.mock("@/modules/terminal/lib/terminalClipboard", () => clipboard);
 
 describe("terminalMouseModifiers", () => {
   it("encodes xterm Shift, Alt, and Control bits", () => {
@@ -436,6 +445,147 @@ describe("GhosttyInputController", () => {
       "\x1b[<32;2;2M",
     );
     controller.dispose();
+  });
+});
+
+describe("clipboard image paste", () => {
+  function harness() {
+    const input = new FakeTextArea();
+    const onData = vi.fn();
+    const controller = new GhosttyInputController({
+      model: inputModel(),
+      input: input as unknown as HTMLTextAreaElement,
+      pointerTarget: new FakeElement() as unknown as HTMLElement,
+      cellSize: () => ({ width: 10, height: 20 }),
+      isMac: true,
+      onCopy: () => false,
+      onData,
+    });
+    return { input, onData, controller };
+  }
+
+  function pasteEvent(data: unknown): ClipboardEvent {
+    return Object.assign(
+      new Event("paste", { bubbles: true, cancelable: true }),
+      {
+        clipboardData: data,
+      },
+    ) as ClipboardEvent;
+  }
+
+  beforeEach(() => {
+    clipboard.readTerminalClipboard.mockResolvedValue("");
+    clipboard.readTerminalClipboardImage.mockResolvedValue(null);
+  });
+  afterEach(() => vi.clearAllMocks());
+
+  it("sends a temp image path when Command+V finds no clipboard text", async () => {
+    clipboard.readTerminalClipboardImage.mockResolvedValue(
+      "/private/tmp/terax-clipboard/terax-paste-1-0.png",
+    );
+    const { input, onData, controller } = harness();
+    try {
+      const event = keyboardEvent({ key: "v", code: "KeyV", metaKey: true });
+      input.dispatchEvent(event);
+      expect(event.defaultPrevented).toBe(true);
+      await vi.waitFor(() => expect(onData).toHaveBeenCalledOnce());
+      expect(new TextDecoder().decode(onData.mock.calls[0][0])).toBe(
+        "/private/tmp/terax-clipboard/terax-paste-1-0.png ",
+      );
+    } finally {
+      controller.dispose();
+    }
+  });
+
+  it("never pays the image IPC round trip when the clipboard holds text", async () => {
+    clipboard.readTerminalClipboard.mockResolvedValue("echo hi");
+    const { input, onData, controller } = harness();
+    try {
+      input.dispatchEvent(
+        keyboardEvent({ key: "v", code: "KeyV", metaKey: true }),
+      );
+      await vi.waitFor(() => expect(onData).toHaveBeenCalledOnce());
+      expect(new TextDecoder().decode(onData.mock.calls[0][0])).toBe("echo hi");
+      expect(clipboard.readTerminalClipboardImage).not.toHaveBeenCalled();
+    } finally {
+      controller.dispose();
+    }
+  });
+
+  it("stays silent when neither text nor an image is on the clipboard", async () => {
+    const { input, onData, controller } = harness();
+    try {
+      input.dispatchEvent(
+        keyboardEvent({ key: "v", code: "KeyV", metaKey: true }),
+      );
+      await vi.waitFor(() =>
+        expect(clipboard.readTerminalClipboardImage).toHaveBeenCalledOnce(),
+      );
+      expect(onData).not.toHaveBeenCalled();
+    } finally {
+      controller.dispose();
+    }
+  });
+
+  it("routes an image-only DOM paste through the same temp path", async () => {
+    clipboard.readTerminalClipboardImage.mockResolvedValue(
+      "/private/tmp/terax-clipboard/terax-paste-2-0.png",
+    );
+    const { input, onData, controller } = harness();
+    try {
+      const event = pasteEvent({
+        getData: () => "",
+        types: ["image/png"],
+        items: [],
+        files: [],
+      });
+      input.dispatchEvent(event);
+      expect(event.defaultPrevented).toBe(true);
+      await vi.waitFor(() => expect(onData).toHaveBeenCalledOnce());
+      expect(new TextDecoder().decode(onData.mock.calls[0][0])).toBe(
+        "/private/tmp/terax-clipboard/terax-paste-2-0.png ",
+      );
+    } finally {
+      controller.dispose();
+    }
+  });
+
+  it("leaves a payload-free DOM paste unconsumed", () => {
+    const { input, onData, controller } = harness();
+    try {
+      const event = pasteEvent({
+        getData: () => "",
+        types: ["text/plain"],
+        items: [],
+        files: [],
+      });
+      input.dispatchEvent(event);
+      expect(event.defaultPrevented).toBe(false);
+      expect(clipboard.readTerminalClipboardImage).not.toHaveBeenCalled();
+      expect(onData).not.toHaveBeenCalled();
+    } finally {
+      controller.dispose();
+    }
+  });
+
+  it("drops a late image path after the input owner is disposed", async () => {
+    let resolvePath: (value: string | null) => void = () => {};
+    clipboard.readTerminalClipboardImage.mockReturnValue(
+      new Promise<string | null>((resolve) => {
+        resolvePath = resolve;
+      }),
+    );
+    const { input, onData, controller } = harness();
+    input.dispatchEvent(
+      keyboardEvent({ key: "v", code: "KeyV", metaKey: true }),
+    );
+    await vi.waitFor(() =>
+      expect(clipboard.readTerminalClipboardImage).toHaveBeenCalledOnce(),
+    );
+    controller.dispose();
+    resolvePath("/private/tmp/terax-clipboard/terax-paste-3-0.png");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(onData).not.toHaveBeenCalled();
   });
 });
 

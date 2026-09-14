@@ -3,7 +3,8 @@ pub mod modules;
 #[cfg(target_os = "macos")]
 use modules::app_menu;
 use modules::{
-    agent, control, fs, git, history, lsp, net, pty, secrets, shell, vibrancy, workspace,
+    agent, clipboard_image, control, fs, git, history, lsp, net, pty, secrets, shell, vibrancy,
+    workspace,
 };
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -323,6 +324,7 @@ pub fn run() {
             workspace::wsl_home,
             workspace::workspace_authorize,
             workspace::workspace_current_dir,
+            clipboard_image::clipboard_read_image_to_temp,
             control::control_frontend_ready,
             control::control_respond,
             get_launch_dir,

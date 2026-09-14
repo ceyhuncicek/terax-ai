@@ -1,4 +1,4 @@
-import { isTauri } from "@tauri-apps/api/core";
+import { invoke, isTauri } from "@tauri-apps/api/core";
 
 export async function readTerminalClipboard(): Promise<string> {
   try {
@@ -9,6 +9,17 @@ export async function readTerminalClipboard(): Promise<string> {
     return (await navigator.clipboard?.readText()) ?? "";
   } catch {
     return "";
+  }
+}
+
+/** Spills a clipboard image to a temp PNG and returns its path, so an agent CLI
+ * reading the pasteboard itself still receives an attachment over the pty. */
+export async function readTerminalClipboardImage(): Promise<string | null> {
+  try {
+    if (!isTauri()) return null;
+    return await invoke<string | null>("clipboard_read_image_to_temp");
+  } catch {
+    return null;
   }
 }
 
