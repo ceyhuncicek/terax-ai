@@ -66,7 +66,7 @@ export function GitSyncPill({ sourceControl }: Props) {
           ) : (
             <HugeiconsIcon icon={GitBranchIcon} size={11} strokeWidth={2} />
           )}
-          <span className="max-w-40 truncate">{branch}</span>
+          <span className="max-w-64 truncate">{branch}</span>
           {indicator.visible ? (
             indicator.action === "publish" ? (
               <HugeiconsIcon icon={CloudUploadIcon} size={11} strokeWidth={2} />
@@ -78,9 +78,10 @@ export function GitSyncPill({ sourceControl }: Props) {
       </TooltipTrigger>
       <TooltipContent
         side="top"
-        className="max-w-64 text-[11px] leading-relaxed"
+        className="max-w-64 flex-col items-start gap-0.5 text-[11px] leading-relaxed"
       >
-        {indicator.visible ? indicator.title : `On branch ${branch}.`}
+        <span className="break-all font-mono">{branch}</span>
+        {indicator.visible ? <span>{indicator.title}</span> : null}
       </TooltipContent>
     </Tooltip>
   );
