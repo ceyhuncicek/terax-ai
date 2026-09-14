@@ -13,6 +13,7 @@ import {
   type GitLogEntry,
 } from "@/modules/ai/lib/native";
 import { fileIconUrl } from "@/modules/explorer/lib/iconResolver";
+import { AuthorAvatar } from "@/modules/source-control/AuthorAvatar";
 import {
   Copy01Icon,
   File02Icon,
@@ -114,33 +115,6 @@ function absoluteTime(secs: number): string {
     hour: "2-digit",
     minute: "2-digit",
   });
-}
-
-function authorInitials(name: string): string {
-  const trimmed = (name ?? "").trim();
-  if (!trimmed) return "?";
-  const parts = trimmed.split(/\s+/);
-  if (parts.length === 1) return parts[0].charAt(0).toUpperCase();
-  return (parts[0].charAt(0) + parts[parts.length - 1].charAt(0)).toUpperCase();
-}
-
-const AUTHOR_TINTS = [
-  "#7aa2f7", // soft blue
-  "#bb9af7", // soft purple
-  "#9ece6a", // soft green
-  "#e0af68", // soft amber
-  "#f7768e", // soft rose
-  "#73daca", // soft teal
-  "#ff9e64", // soft orange
-  "#b4f9f8", // pale cyan
-];
-
-function authorTint(key: string): string {
-  let hash = 0;
-  for (let i = 0; i < key.length; i++) {
-    hash = (hash * 31 + key.charCodeAt(i)) | 0;
-  }
-  return AUTHOR_TINTS[Math.abs(hash) % AUTHOR_TINTS.length];
 }
 
 function compactDate(secs: number): string {
@@ -704,7 +678,6 @@ const CommitRow = memo(function CommitRow({
   onClick,
 }: CommitRowProps) {
   const date = compactDate(commit.timestampSecs);
-  const initials = authorInitials(commit.author);
   const totalStat = commit.insertions + commit.deletions;
   return (
     <button
@@ -748,14 +721,7 @@ const CommitRow = memo(function CommitRow({
         className="ml-2 inline-flex h-[18px] max-w-full min-w-0 items-center gap-1.5 justify-self-start self-center overflow-hidden rounded-md bg-foreground/6 pl-1 pr-1.5 text-[10.5px] font-medium text-foreground/85"
         title={commit.authorEmail || commit.author}
       >
-        <span
-          className="inline-flex size-3.5 shrink-0 items-center justify-center rounded-[3px] font-mono text-[8.5px] font-bold uppercase tabular-nums text-background"
-          style={{
-            backgroundColor: authorTint(commit.authorEmail || commit.author),
-          }}
-        >
-          {initials}
-        </span>
+        <AuthorAvatar name={commit.author} email={commit.authorEmail} />
         <span className="min-w-0 truncate">
           {commit.author ? highlight(commit.author, query) : "Unknown"}
         </span>
