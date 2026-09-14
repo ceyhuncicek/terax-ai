@@ -12,6 +12,11 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { Spinner } from "@/components/ui/spinner";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { type GitBranchEntry, native } from "@/modules/ai/lib/native";
 import {
   CloudIcon,
@@ -81,9 +86,14 @@ function BranchRow({
         <span className="w-3.5 shrink-0" />
       )}
       <div className="flex min-w-0 flex-1 flex-col">
-        <span className="truncate">{entry.name}</span>
+        <span className="truncate" title={entry.name}>
+          {entry.name}
+        </span>
         {entry.worktreePath ? (
-          <span className="truncate text-[10px] text-muted-foreground">
+          <span
+            className="truncate text-[10px] text-muted-foreground"
+            title={entry.worktreePath}
+          >
             {entry.worktreePath}
           </span>
         ) : null}
@@ -108,6 +118,7 @@ export function BranchPicker({
   onRefresh,
 }: Props) {
   const [open, setOpen] = useState(false);
+  const [tooltipOpen, setTooltipOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [branches, setBranches] = useState<GitBranchEntry[]>([]);
   const [loading, setLoading] = useState(false);
@@ -203,33 +214,55 @@ export function BranchPicker({
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger asChild>
-        <button
-          type="button"
-          disabled={checkingOut}
-          title={displayRepoRoot ?? repoLabel}
-          className="inline-flex min-w-0 cursor-pointer items-center gap-1.5 rounded-md bg-foreground/5 px-2 py-1 text-[11.5px] font-medium leading-none text-foreground transition-colors hover:bg-foreground/10 disabled:cursor-default disabled:opacity-70"
-        >
-          <HugeiconsIcon
-            icon={FolderGitTwoIcon}
-            size={12}
-            strokeWidth={1.9}
-            className="shrink-0 text-muted-foreground"
-          />
-          {displayRepoRoot ? (
-            <>
-              <span className="max-w-22 truncate">
-                {basename(displayRepoRoot)}
+      <Tooltip open={tooltipOpen && !open} onOpenChange={setTooltipOpen}>
+        <TooltipTrigger asChild>
+          <PopoverTrigger asChild>
+            <button
+              type="button"
+              disabled={checkingOut}
+              className="inline-flex min-w-0 flex-1 cursor-pointer items-center gap-1.5 rounded-md bg-foreground/5 px-2 py-1 text-[11.5px] font-medium leading-none text-foreground transition-colors hover:bg-foreground/10 disabled:cursor-default disabled:opacity-70"
+            >
+              <HugeiconsIcon
+                icon={FolderGitTwoIcon}
+                size={12}
+                strokeWidth={1.9}
+                className="shrink-0 text-muted-foreground"
+              />
+              {displayRepoRoot ? (
+                <>
+                  <span className="max-w-22 shrink truncate">
+                    {basename(displayRepoRoot)}
+                  </span>
+                  <span className="shrink-0 text-muted-foreground/60">/</span>
+                </>
+              ) : null}
+              {/* flex-basis 0 items never shrink, so a floor keeps the branch
+                  readable once the repository name has fully truncated. */}
+              <span className="min-w-12 flex-1 truncate text-left">
+                {repoLabel}
               </span>
-              <span className="text-muted-foreground/60">/</span>
-            </>
+            </button>
+          </PopoverTrigger>
+        </TooltipTrigger>
+        <TooltipContent
+          side="top"
+          className="max-w-72 flex-col items-start gap-1 text-[11px] leading-relaxed"
+        >
+          {displayRepoRoot ? (
+            <span className="break-all">
+              <span className="text-background/60">Repository: </span>
+              {displayRepoRoot}
+            </span>
           ) : null}
-          <span className="max-w-24 truncate">{repoLabel}</span>
-        </button>
-      </PopoverTrigger>
+          <span className="break-all">
+            <span className="text-background/60">Branch: </span>
+            <span className="font-mono">{repoLabel}</span>
+          </span>
+        </TooltipContent>
+      </Tooltip>
       <PopoverContent
         align="start"
-        className="w-80 gap-0 rounded-xl p-0"
+        className="w-[min(26rem,calc(100vw-2rem))] gap-0 rounded-xl p-0"
         onOpenAutoFocus={(event) => {
           // let the search input take focus instead of the first row
           event.preventDefault();
