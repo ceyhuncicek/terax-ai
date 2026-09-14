@@ -24,6 +24,7 @@ import {
   setExplorerGitDecorations,
   setRestoreWindowState,
   setShowHidden,
+  setSourceControlAvatars,
   setSourceControlUndoCommit,
   setTerminalCursorBlink,
   setTerminalCursorStyle,
@@ -99,6 +100,9 @@ export function GeneralSection() {
   );
   const sourceControlUndoCommit = usePreferencesStore(
     (s) => s.sourceControlUndoCommit,
+  );
+  const sourceControlAvatars = usePreferencesStore(
+    (s) => s.sourceControlAvatars,
   );
   const terminalRenderer = usePreferencesStore((s) => s.terminalRenderer);
   const terminalScreenReader = usePreferencesStore(
@@ -254,6 +258,15 @@ export function GeneralSection() {
           <Switch
             checked={sourceControlUndoCommit}
             onCheckedChange={(v) => void setSourceControlUndoCommit(v)}
+          />
+        </SettingRow>
+        <SettingRow
+          title="Author avatars"
+          description="Show a picture next to each commit author. Terax looks the picture up on Gravatar using a hash of the author email, and on GitHub for github.com noreply addresses. Turn this off to keep commit lists offline; initials are shown instead."
+        >
+          <Switch
+            checked={sourceControlAvatars}
+            onCheckedChange={(v) => void setSourceControlAvatars(v)}
           />
         </SettingRow>
       </div>

@@ -28,6 +28,7 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import { memo, useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
+import { AuthorAvatar } from "./AuthorAvatar";
 
 export const HISTORY_HEADER_PX = 29;
 
@@ -488,7 +489,7 @@ const CommitRow = memo(function CommitRow({
         <button
           type="button"
           onClick={() => onToggle(commit.sha)}
-          title={`${commit.subject}\n${commit.shortSha} by ${commit.author}`}
+          title={`${commit.subject}\n${commit.shortSha} by ${commit.author}${isMerge ? " (merge)" : ""}`}
           className={cn(
             "flex w-full cursor-pointer items-center gap-1.5 px-2 py-[5px] text-left transition-colors hover:bg-foreground/[0.05]",
             expanded && "bg-foreground/[0.04]",
@@ -502,10 +503,12 @@ const CommitRow = memo(function CommitRow({
           />
           <span
             className={cn(
-              "size-1.5 shrink-0 rounded-full",
-              isMerge ? "bg-muted-foreground/50" : "bg-primary/70",
+              "flex shrink-0 items-center rounded-[3px]",
+              isMerge && "ring-1 ring-muted-foreground/70",
             )}
-          />
+          >
+            <AuthorAvatar name={commit.author} email={commit.authorEmail} />
+          </span>
           <span className="min-w-0 flex-1 truncate text-[11.5px] leading-tight text-foreground/90">
             {commit.subject}
           </span>

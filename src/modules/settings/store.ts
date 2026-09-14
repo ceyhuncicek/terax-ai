@@ -161,6 +161,7 @@ export type Preferences = {
   showHidden: boolean;
   explorerGitDecorations: boolean;
   sourceControlUndoCommit: boolean;
+  sourceControlAvatars: boolean;
   terminalRenderer: "auto" | "webgl";
   terminalScreenReader: boolean;
   terminalCursorBlink: boolean;
@@ -259,6 +260,7 @@ const KEY_SHOW_HIDDEN = "showHidden";
 const LEGACY_KEY_SHOW_HIDDEN_DIRS = "showHiddenDirectories";
 const KEY_EXPLORER_GIT_DECORATIONS = "explorerGitDecorations";
 const KEY_SOURCE_CONTROL_UNDO_COMMIT = "sourceControlUndoCommit";
+const KEY_SOURCE_CONTROL_AVATARS = "sourceControlAvatars";
 const KEY_TERMINAL_RENDERER = "terminalRenderer";
 const KEY_TERMINAL_SCREEN_READER = "terminalScreenReader";
 const KEY_TERMINAL_CURSOR_BLINK = "terminalCursorBlink";
@@ -353,6 +355,7 @@ export const DEFAULT_PREFERENCES: Preferences = {
   showHidden: false,
   explorerGitDecorations: true,
   sourceControlUndoCommit: true,
+  sourceControlAvatars: true,
   terminalRenderer: "auto",
   terminalScreenReader: false,
   terminalCursorBlink: false,
@@ -518,6 +521,9 @@ export async function loadPreferences(): Promise<Preferences> {
     sourceControlUndoCommit:
       get<boolean>(KEY_SOURCE_CONTROL_UNDO_COMMIT) ??
       DEFAULT_PREFERENCES.sourceControlUndoCommit,
+    sourceControlAvatars:
+      get<boolean>(KEY_SOURCE_CONTROL_AVATARS) ??
+      DEFAULT_PREFERENCES.sourceControlAvatars,
     terminalRenderer:
       get<string>(KEY_TERMINAL_RENDERER) === "webgl" ? "webgl" : "auto",
     terminalScreenReader: get<boolean>(KEY_TERMINAL_SCREEN_READER) === true,
@@ -822,6 +828,10 @@ export async function setSourceControlUndoCommit(
   await writePref(KEY_SOURCE_CONTROL_UNDO_COMMIT, value);
 }
 
+export async function setSourceControlAvatars(value: boolean): Promise<void> {
+  await writePref(KEY_SOURCE_CONTROL_AVATARS, value);
+}
+
 export async function setTerminalRenderer(
   value: "auto" | "webgl",
 ): Promise<void> {
@@ -1027,6 +1037,7 @@ export async function onPreferencesChange(
     [KEY_SHOW_HIDDEN]: "showHidden",
     [KEY_EXPLORER_GIT_DECORATIONS]: "explorerGitDecorations",
     [KEY_SOURCE_CONTROL_UNDO_COMMIT]: "sourceControlUndoCommit",
+    [KEY_SOURCE_CONTROL_AVATARS]: "sourceControlAvatars",
     [KEY_TERMINAL_RENDERER]: "terminalRenderer",
     [KEY_TERMINAL_SCREEN_READER]: "terminalScreenReader",
     [KEY_TERMINAL_CURSOR_BLINK]: "terminalCursorBlink",
