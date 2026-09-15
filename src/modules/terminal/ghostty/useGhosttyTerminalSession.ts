@@ -7,6 +7,7 @@ import {
 import { initializeSessionGeneration as startSessionInitialization } from "@/modules/terminal/ghostty/sessionInitialization";
 import { replaceSessionSurface } from "@/modules/terminal/ghostty/replaceSessionSurface";
 import { openExternalUrl } from "@/lib/external-link";
+import { revealInFinder } from "@/modules/explorer/lib/contextActions";
 import {
   resolveFileLinkPath,
   type TerminalLinkTarget,
@@ -19,9 +20,15 @@ import {
   OPEN_FILE_AT_EVENT,
 } from "@/modules/terminal/lib/openFileAt";
 import { PtyResizeScheduler } from "@/modules/terminal/lib/ptyResizeScheduler";
+import {
+  terminalLinkAction,
+  type TerminalLinkAction,
+  type TerminalLinkStat,
+} from "@/modules/terminal/lib/terminalLinkAction";
 import { subscribeTerminalResizeInteraction } from "@/modules/terminal/lib/terminalResizeInteraction";
 import { useTerminalFont } from "@/modules/terminal/lib/useTerminalFont";
 import type { TerminalSearchController } from "@/modules/terminal/search/TerminalSearchController";
+import { currentWorkspaceEnv } from "@/modules/workspace";
 import { invoke } from "@tauri-apps/api/core";
 import { emit } from "@tauri-apps/api/event";
 import { homeDir } from "@tauri-apps/api/path";
@@ -62,6 +69,33 @@ void homeDir()
   })
   .catch(() => {});
 
+async function statTerminalLinkPath(
+  path: string,
+): Promise<TerminalLinkStat | null> {
+  try {
+    return await invoke<TerminalLinkStat>("fs_stat", {
+      path,
+      workspace: currentWorkspaceEnv(),
+    });
+  } catch {
+    return null;
+  }
+}
+
+async function resolveTerminalLinkAction(
+  path: string,
+): Promise<TerminalLinkAction> {
+  const action = terminalLinkAction(await statTerminalLinkPath(path));
+  if (action !== "resolve") return action;
+  const canonical = await invoke<string>("fs_canonicalize", {
+    path,
+    workspace: currentWorkspaceEnv(),
+  }).catch(() => null);
+  if (canonical === null) return "none";
+  const resolved = terminalLinkAction(await statTerminalLinkPath(canonical));
+  return resolved === "resolve" ? "none" : resolved;
+}
+
 function openTerminalLink(
   target: TerminalLinkTarget,
   session: GhosttySession,
@@ -80,14 +114,24 @@ function openTerminalLink(
     restoreFocus();
     return;
   }
-  // Focus belongs to the editor this opens, so the terminal only takes it back
-  // when nothing opened.
-  void emit(OPEN_FILE_AT_EVENT, fileLinkOpenPayload(target, path)).catch(
-    (error) => {
-      console.error("[terax] failed to open terminal file link:", error);
+  void (async () => {
+    // Focus belongs to whatever this opens, so the terminal only takes it back
+    // when nothing opened.
+    const action = await resolveTerminalLinkAction(path);
+    if (action === "reveal") {
+      await revealInFinder(path);
+      return;
+    }
+    if (action === "none") {
+      console.warn("[terax] terminal file link is not a readable path:", path);
       restoreFocus();
-    },
-  );
+      return;
+    }
+    await emit(OPEN_FILE_AT_EVENT, fileLinkOpenPayload(target, path));
+  })().catch((error: unknown) => {
+    console.error("[terax] failed to open terminal file link:", error);
+    restoreFocus();
+  });
 }
 
 const DEFAULT_COLS = 80;
