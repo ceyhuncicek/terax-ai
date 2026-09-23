@@ -24,7 +24,11 @@ import {
 } from "react";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import { fileIconUrl } from "./lib/iconResolver";
-import { copyToClipboard, revealInFinder } from "./lib/contextActions";
+import {
+  copyToClipboard,
+  openInDefaultAppOrWarn,
+  revealInFinder,
+} from "./lib/contextActions";
 import { COMPACT_CONTENT, COMPACT_ITEM } from "./lib/menuItemClass";
 import { cn } from "@/lib/utils";
 
@@ -306,6 +310,12 @@ export const ExplorerSearch = forwardRef<ExplorerSearchHandle, Props>(function E
                           Open Git History
                         </ContextMenuItem>
                       )}
+                      <ContextMenuItem
+                        className={COMPACT_ITEM}
+                        onSelect={() => void openInDefaultAppOrWarn(hit.path)}
+                      >
+                        Open in Default App
+                      </ContextMenuItem>
                       <ContextMenuItem
                         className={COMPACT_ITEM}
                         onSelect={() => void revealInFinder(hit.path)}

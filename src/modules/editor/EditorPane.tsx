@@ -1,5 +1,6 @@
 import { endpointIdFromCompatModel } from "@/modules/ai/config";
 import { getCustomEndpointKey, getKey } from "@/modules/ai/lib/keyring";
+import { openInDefaultApp } from "@/modules/explorer/lib/contextActions";
 import { lspFormatDocument, useLspExtension } from "@/modules/lsp";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import { onKeysChanged } from "@/modules/settings/store";
@@ -55,8 +56,10 @@ import {
 } from "./lib/externalFormat";
 import { detectIndentUnit } from "./lib/indent";
 import { type LanguageResult, resolveLanguage } from "./lib/languageResolver";
+import { type MediaKind, mediaKindForPath } from "./lib/mediaKind";
 import { FORCE_READ_LIMIT, useDocument } from "./lib/useDocument";
 import { useEditorThemeExt } from "./lib/useEditorThemeExt";
+import { useMediaObjectUrl } from "./lib/useMediaObjectUrl";
 import { initVimGlobals, vimHandlersExtension } from "./lib/vim";
 
 initVimGlobals();
@@ -100,6 +103,143 @@ function formatBytes(n: number): string {
   if (n < 1024) return `${n} B`;
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
   return `${(n / 1024 / 1024).toFixed(1)} MB`;
+}
+
+const MEDIA_BUTTON_CLASS =
+  "rounded-md border border-border bg-muted/60 px-3 py-1 text-xs text-foreground hover:bg-accent";
+
+/** Preview for a binary the editor cannot show as text. The caller keys this on
+ * path plus the retry counter, so both a tab switch and a retry remount it and
+ * start the load over. */
+function MediaPreview({
+  path,
+  kind,
+  attempt,
+  onRetry,
+}: {
+  path: string;
+  kind: NonNullable<MediaKind>;
+  attempt: number;
+  onRetry: () => void;
+}) {
+  // Images come over IPC as bytes; streaming media stays on the asset protocol
+  // so it is not buffered into memory whole.
+  const media = useMediaObjectUrl(path, kind === "image");
+  const [decodeFailed, setDecodeFailed] = useState(false);
+  // openInDefaultApp swallows the OS error, so the button needs its own notice
+  // or a refused path looks like a dead control.
+  const [openFailed, setOpenFailed] = useState(false);
+  const fileName = path.split(/[/\\]/).pop();
+
+  const retryButton = (
+    <button type="button" onClick={onRetry} className={MEDIA_BUTTON_CLASS}>
+      Retry
+    </button>
+  );
+  const openButton = (
+    <button
+      type="button"
+      onClick={async () => setOpenFailed(!(await openInDefaultApp(path)))}
+      className={MEDIA_BUTTON_CLASS}
+    >
+      Open in default app
+    </button>
+  );
+  const openNote = openFailed ? (
+    <span className="text-xs text-destructive">
+      Couldn't open in default app
+    </span>
+  ) : null;
+  // An iframe reports nothing when its resource is refused, so the controls
+  // stay on screen for every kind rather than waiting for a detected failure.
+  const cornerControls = (
+    <div className="absolute right-3 top-3 flex flex-col items-end gap-1">
+      <div className="flex items-center gap-2">
+        {retryButton}
+        {openButton}
+      </div>
+      {openNote}
+    </div>
+  );
+
+  const failure = decodeFailed ? "Preview failed to render" : media.error;
+  if (failure) {
+    return (
+      <div className="flex h-full flex-col items-center justify-center gap-1 px-6 text-center">
+        <div className="text-sm text-foreground">{fileName}</div>
+        <div className="text-xs text-muted-foreground">{failure}</div>
+        <div className="mt-2 flex items-center gap-2">
+          {retryButton}
+          {openButton}
+        </div>
+        {openNote}
+      </div>
+    );
+  }
+
+  if (kind === "image") {
+    if (!media.url) {
+      return (
+        <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
+          Loading…
+        </div>
+      );
+    }
+    return (
+      <div className="relative flex h-full min-h-0 flex-col items-center justify-center bg-background p-4 overflow-auto">
+        <img
+          src={media.url}
+          decoding="async"
+          onError={() => setDecodeFailed(true)}
+          className="max-w-full max-h-full object-contain rounded-md border border-border shadow-sm"
+          style={{
+            backgroundImage:
+              "conic-gradient(var(--muted) 0.25turn, transparent 0.25turn 0.5turn, var(--muted) 0.5turn 0.75turn, transparent 0.75turn)",
+            backgroundSize: "20px 20px",
+          }}
+          alt={fileName}
+        />
+        {cornerControls}
+      </div>
+    );
+  }
+
+  // A retry has to change the URL: an identical one comes straight back out of
+  // the webview cache, failure and all.
+  const base = convertFileSrc(path);
+  const assetUrl = attempt > 0 ? `${base}?retry=${attempt}` : base;
+  return (
+    <div className="relative flex h-full min-h-0 flex-col items-center justify-center bg-background p-4 overflow-auto">
+      {kind === "video" && (
+        // biome-ignore lint/a11y/useMediaCaption: local media preview opens arbitrary files with no caption track
+        <video
+          controls
+          preload="metadata"
+          onError={() => setDecodeFailed(true)}
+          className="max-w-full max-h-full"
+          src={assetUrl}
+        />
+      )}
+      {kind === "audio" && (
+        // biome-ignore lint/a11y/useMediaCaption: local media preview opens arbitrary files with no caption track
+        <audio
+          controls
+          preload="metadata"
+          onError={() => setDecodeFailed(true)}
+          className="w-full max-w-md"
+          src={assetUrl}
+        />
+      )}
+      {kind === "pdf" && (
+        <iframe
+          src={assetUrl}
+          className="w-full h-full border-none"
+          title={fileName}
+        />
+      )}
+      {cornerControls}
+    </div>
+  );
 }
 
 // memo: EditorStack passes identity-stable props, so background editors
@@ -473,6 +613,10 @@ export const EditorPane = memo(
       };
     }, [path, doc.status, overrideLanguage]);
 
+    // Bumped by the preview's retry button; it is part of MediaPreview's key,
+    // so a retry remounts it and re-runs the load from scratch.
+    const [mediaAttempt, setMediaAttempt] = useState(0);
+
     useImperativeHandle(
       ref,
       () => ({
@@ -563,68 +707,21 @@ export const EditorPane = memo(
       );
     }
     if (doc.status === "binary" || doc.status === "toolarge") {
-      const ext = path.split(".").pop()?.toLowerCase() ?? "";
-      const isImage = [
-        "png",
-        "jpg",
-        "jpeg",
-        "gif",
-        "webp",
-        "svg",
-        "ico",
-      ].includes(ext);
-      const isVideo = ["mp4", "webm", "ogg", "mov"].includes(ext);
-      const isAudio = ["mp3", "wav", "flac", "aac", "m4a"].includes(ext);
-      const isPdf = ext === "pdf";
-
-      if (isImage || isVideo || isAudio || isPdf) {
-        const assetUrl = convertFileSrc(path);
+      const mediaKind = mediaKindForPath(path);
+      if (mediaKind) {
         return (
-          <div className="flex h-full min-h-0 flex-col items-center justify-center bg-background p-4 overflow-auto">
-            {isImage && (
-              <img
-                src={assetUrl}
-                loading="lazy"
-                decoding="async"
-                className="max-w-full max-h-full object-contain rounded-md border border-border shadow-sm"
-                style={{
-                  backgroundImage:
-                    "conic-gradient(var(--muted) 0.25turn, transparent 0.25turn 0.5turn, var(--muted) 0.5turn 0.75turn, transparent 0.75turn)",
-                  backgroundSize: "20px 20px",
-                }}
-                alt={path.split("/").pop()}
-              />
-            )}
-            {isVideo && (
-              // biome-ignore lint/a11y/useMediaCaption: local media preview opens arbitrary files with no caption track
-              <video
-                controls
-                preload="metadata"
-                className="max-w-full max-h-full"
-                src={assetUrl}
-              />
-            )}
-            {isAudio && (
-              // biome-ignore lint/a11y/useMediaCaption: local media preview opens arbitrary files with no caption track
-              <audio
-                controls
-                preload="metadata"
-                className="w-full max-w-md"
-                src={assetUrl}
-              />
-            )}
-            {isPdf && (
-              <iframe
-                src={assetUrl}
-                className="w-full h-full border-none"
-                title={path.split("/").pop()}
-              />
-            )}
-          </div>
+          <MediaPreview
+            key={`${path}#${mediaAttempt}`}
+            path={path}
+            kind={mediaKind}
+            attempt={mediaAttempt}
+            onRetry={() => setMediaAttempt((n) => n + 1)}
+          />
         );
       }
 
-      const canForce = doc.status === "toolarge" && doc.size <= FORCE_READ_LIMIT;
+      const canForce =
+        doc.status === "toolarge" && doc.size <= FORCE_READ_LIMIT;
       return (
         <div className="flex h-full flex-col items-center justify-center gap-1 px-6 text-center">
           <div className="text-sm text-foreground">

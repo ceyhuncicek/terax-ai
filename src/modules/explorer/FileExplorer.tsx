@@ -38,6 +38,7 @@ import {
 import { InlineInput } from "./InlineInput";
 import {
   copyToClipboard,
+  openInDefaultAppOrWarn,
   relativePath,
   revealInFinder,
 } from "./lib/contextActions";
@@ -849,6 +850,14 @@ export const FileExplorer = memo(
                   )}
                   <ContextMenuItem
                     className={COMPACT_ITEM}
+                    onSelect={() =>
+                      void openInDefaultAppOrWarn(menuTarget.path)
+                    }
+                  >
+                    Open in Default App
+                  </ContextMenuItem>
+                  <ContextMenuItem
+                    className={COMPACT_ITEM}
                     onSelect={() => void revealInFinder(menuTarget.path)}
                   >
                     Reveal in Finder
@@ -948,6 +957,12 @@ export const FileExplorer = memo(
                       Open Git History
                     </ContextMenuItem>
                   )}
+                  <ContextMenuItem
+                    className={COMPACT_ITEM}
+                    onSelect={() => void openInDefaultAppOrWarn(rootPath)}
+                  >
+                    Open in Default App
+                  </ContextMenuItem>
                   <ContextMenuItem
                     className={COMPACT_ITEM}
                     onSelect={() => void revealInFinder(rootPath)}
