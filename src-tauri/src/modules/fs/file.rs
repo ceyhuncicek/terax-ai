@@ -191,6 +191,44 @@ pub async fn fs_stat(path: String, workspace: Option<WorkspaceEnv>) -> Result<Fi
     })
 }
 
+/// Raw bytes for the media preview. The webview loads images through this
+/// instead of the asset protocol, whose scope silently rejects paths with a
+/// dot-prefixed component.
+#[tauri::command]
+pub async fn fs_read_media(
+    path: String,
+    workspace: Option<WorkspaceEnv>,
+) -> Result<tauri::ipc::Response, String> {
+    let workspace = WorkspaceEnv::from_option(workspace);
+    let bytes = read_media_bytes(&resolve_path(&path, &workspace))?;
+    Ok(tauri::ipc::Response::new(bytes))
+}
+
+fn read_media_bytes(p: &Path) -> Result<Vec<u8>, String> {
+    let meta = std::fs::metadata(p).map_err(|e| {
+        log::debug!("fs_read_media stat({}) failed: {e}", p.display());
+        e.to_string()
+    })?;
+    if meta.is_dir() {
+        log::debug!("fs_read_media({}) is a directory", p.display());
+        return Err("path is a directory".into());
+    }
+
+    let size = meta.len();
+    if size > FORCE_MAX_READ_BYTES {
+        return Err(format!(
+            "file is {:.1} MB, over the {:.1} MB preview limit",
+            size as f64 / 1024.0 / 1024.0,
+            FORCE_MAX_READ_BYTES as f64 / 1024.0 / 1024.0
+        ));
+    }
+
+    std::fs::read(p).map_err(|e| {
+        log::debug!("fs_read_media read({}) failed: {e}", p.display());
+        e.to_string()
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -250,6 +288,40 @@ mod tests {
             read_file_sync(&f, true).unwrap(),
             ReadResult::Text { .. }
         ));
+    }
+
+    #[test]
+    fn read_media_returns_raw_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("a.png");
+        std::fs::write(&f, [0x89, b'P', b'N', b'G', 0x0d]).unwrap();
+        assert_eq!(read_media_bytes(&f).unwrap(), [0x89, b'P', b'N', b'G', 0x0d]);
+    }
+
+    #[test]
+    fn read_media_rejects_a_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let err = read_media_bytes(dir.path()).unwrap_err();
+        assert!(err.contains("is a directory"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn read_media_rejects_a_missing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(read_media_bytes(&dir.path().join("nope.png")).is_err());
+    }
+
+    #[test]
+    fn read_media_rejects_over_the_size_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("huge.png");
+        // Sparse: only the reported length matters to the limit check.
+        std::fs::File::create(&f)
+            .unwrap()
+            .set_len(FORCE_MAX_READ_BYTES + 1)
+            .unwrap();
+        let err = read_media_bytes(&f).unwrap_err();
+        assert!(err.contains("preview limit"), "unexpected error: {err}");
     }
 
     #[test]

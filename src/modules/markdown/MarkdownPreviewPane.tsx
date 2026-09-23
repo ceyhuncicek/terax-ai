@@ -1,11 +1,23 @@
 import { MarkdownCode } from "@/components/ai-elements/markdown-code";
 import { cn } from "@/lib/utils";
 import { currentWorkspaceEnv } from "@/modules/workspace";
-import { invoke } from "@tauri-apps/api/core";
-import { useEffect, useState } from "react";
+import { convertFileSrc, invoke } from "@tauri-apps/api/core";
+import { homeDir } from "@tauri-apps/api/path";
+import { type ComponentProps, useEffect, useMemo, useState } from "react";
 import { Streamdown } from "streamdown";
+import { resolveMarkdownImageSrc } from "./lib/resolveMarkdownImageSrc";
 import { MarkdownLink } from "./MarkdownLink";
 import { MarkdownViewToggle } from "./MarkdownViewToggle";
+
+// Resolved once per process; panes mounted before it lands subscribe and
+// re-render so `~/`-relative images stop rendering as their literal source.
+let cachedHome: string | null = null;
+const homePath: Promise<string | null> = homeDir()
+  .then((h) => {
+    cachedHome = h.replace(/\\/g, "/").replace(/\/+$/, "");
+    return cachedHome;
+  })
+  .catch(() => null);
 
 type ReadResult =
   | { kind: "text"; content: string; size: number }
@@ -25,10 +37,50 @@ type Props = {
   onSetView: (mode: "rendered" | "raw") => void;
 };
 
-const components = { a: MarkdownLink, code: MarkdownCode };
+type MarkdownImageProps = ComponentProps<"img"> & { node?: unknown };
+
+function markdownComponents(mdFileDir: string, home: string | null) {
+  return {
+    a: MarkdownLink,
+    code: MarkdownCode,
+    img: ({ alt, node: _node, src, ...props }: MarkdownImageProps) => {
+      const resolved =
+        typeof src === "string"
+          ? resolveMarkdownImageSrc(src, mdFileDir, home)
+          : null;
+      return (
+        <img
+          {...props}
+          alt={alt ?? ""}
+          src={resolved ? convertFileSrc(resolved) : src}
+        />
+      );
+    },
+  };
+}
 
 export function MarkdownPreviewPane({ path, visible, onSetView }: Props) {
   const [status, setStatus] = useState<Status>({ kind: "loading" });
+  const [home, setHome] = useState<string | null>(cachedHome);
+  const components = useMemo(
+    () =>
+      markdownComponents(
+        path.replace(/\\/g, "/").replace(/\/[^/]*$/, ""),
+        home,
+      ),
+    [path, home],
+  );
+
+  useEffect(() => {
+    if (home !== null) return;
+    let cancelled = false;
+    void homePath.then((h) => {
+      if (!cancelled) setHome(h);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [home]);
 
   useEffect(() => {
     let cancelled = false;
