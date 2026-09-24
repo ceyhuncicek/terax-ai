@@ -88,7 +88,7 @@ describe("shouldActivateLink", () => {
     expect(
       shouldActivateLink(
         attempt({
-          upPoint: { x: 100 + LINK_ACTIVATION_MOVE_TOLERANCE_PX, y: 200 },
+          upPoint: { x: 100 + LINK_ACTIVATION_MOVE_TOLERANCE_PX + 1, y: 200 },
         }),
       ),
     ).toBe(false);
@@ -97,10 +97,20 @@ describe("shouldActivateLink", () => {
     );
   });
 
-  it("tolerates sub-threshold pointer jitter", () => {
+  it("tolerates trackpad drift up to the movement tolerance", () => {
     expect(shouldActivateLink(attempt({ upPoint: { x: 101, y: 201 } }))).toBe(
       true,
     );
+    expect(shouldActivateLink(attempt({ upPoint: { x: 104, y: 202 } }))).toBe(
+      true,
+    );
+    expect(
+      shouldActivateLink(
+        attempt({
+          upPoint: { x: 100 + LINK_ACTIVATION_MOVE_TOLERANCE_PX, y: 200 },
+        }),
+      ),
+    ).toBe(true);
   });
 
   it("does not activate when the target changed between down and up", () => {

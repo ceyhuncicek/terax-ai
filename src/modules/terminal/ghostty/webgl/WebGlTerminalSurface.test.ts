@@ -1,8 +1,10 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { IS_MAC } from "@/lib/platform";
+import type { TerminalLinkTarget } from "@/modules/terminal/ghostty/core/terminalLinks";
 import type { GhosttyTerminalModelApi } from "@/modules/terminal/ghostty/GhosttyTerminalModel";
 import type { WindowPresentation } from "@/modules/terminal/ghostty/WindowPresentationPolicy";
 import type { WebGlCellRenderer } from "@/modules/terminal/ghostty/webgl/WebGlCellRenderer";
 import { WebGlTerminalSurface } from "@/modules/terminal/ghostty/webgl/WebGlTerminalSurface";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 const bridge = vi.hoisted(() => ({
   runtime: {} as unknown,
@@ -70,6 +72,78 @@ describe("WebGL surface renderer ownership", () => {
   });
 });
 
+// clientX 44 / clientY 56 lands on viewport cell row 3, column 5 at 8x16 cells.
+describe("WebGL surface link activation", () => {
+  it("opens the hovered link on a modifier click", () => {
+    const h = harness();
+    h.setLink(0, 3, 5, DOCS);
+    h.pointer("pointerdown", { clientX: 44, clientY: 56, ...MODIFIER });
+    h.pointer("pointerup", { clientX: 45, clientY: 57, ...MODIFIER });
+    expect(h.onOpenLink).toHaveBeenCalledWith(DOCS);
+  });
+
+  it("re-resolves the link after a scroll that does not change the revision", () => {
+    const h = harness();
+    h.setLink(0, 3, 5, DOCS);
+    h.setLink(7, 3, 5, CHANGELOG);
+    h.pointer("pointermove", { clientX: 44, clientY: 56, ...MODIFIER });
+    h.scrollTo(7);
+    h.pointer("pointerdown", { clientX: 44, clientY: 56, ...MODIFIER });
+    h.pointer("pointerup", { clientX: 44, clientY: 56, ...MODIFIER });
+    expect(h.onOpenLink).toHaveBeenCalledWith(CHANGELOG);
+    expect(h.onOpenLink).not.toHaveBeenCalledWith(DOCS);
+  });
+
+  it("keeps an in-flight click alive across terminal output", () => {
+    const h = harness();
+    h.setLink(0, 3, 5, DOCS);
+    h.pointer("pointerdown", { clientX: 44, clientY: 56, ...MODIFIER });
+    h.write();
+    h.render();
+    h.pointer("pointerup", { clientX: 44, clientY: 56, ...MODIFIER });
+    expect(h.onOpenLink).toHaveBeenCalledWith(DOCS);
+  });
+
+  it("drops an in-flight click when the pointer is cancelled", () => {
+    const h = harness();
+    h.setLink(0, 3, 5, DOCS);
+    h.pointer("pointerdown", { clientX: 44, clientY: 56, ...MODIFIER });
+    h.pointer("pointercancel", { clientX: 44, clientY: 56, ...MODIFIER });
+    h.pointer("pointerup", { clientX: 44, clientY: 56, ...MODIFIER });
+    expect(h.onOpenLink).not.toHaveBeenCalled();
+  });
+
+  it("survives a pointerup from an unrelated pointer", () => {
+    const h = harness();
+    h.setLink(0, 3, 5, DOCS);
+    h.pointer("pointerdown", { clientX: 44, clientY: 56, ...MODIFIER });
+    h.pointer("pointerup", {
+      pointerId: 2,
+      clientX: 44,
+      clientY: 56,
+      ...MODIFIER,
+    });
+    h.pointer("pointerup", { clientX: 44, clientY: 56, ...MODIFIER });
+    expect(h.onOpenLink).toHaveBeenCalledWith(DOCS);
+  });
+
+  it("does not open a link on a plain click", () => {
+    const h = harness();
+    h.setLink(0, 3, 5, DOCS);
+    h.pointer("pointerdown", { clientX: 44, clientY: 56 });
+    h.pointer("pointerup", { clientX: 44, clientY: 56 });
+    expect(h.onOpenLink).not.toHaveBeenCalled();
+  });
+
+  it("does not open a link released outside the grid", () => {
+    const h = harness();
+    h.setLink(0, 3, 5, DOCS);
+    h.pointer("pointerdown", { clientX: 44, clientY: 56, ...MODIFIER });
+    h.pointer("pointerup", { clientX: 44, clientY: 900, ...MODIFIER });
+    expect(h.onOpenLink).not.toHaveBeenCalled();
+  });
+});
+
 const METRICS = {
   font: {
     family: "monospace",
@@ -89,6 +163,30 @@ const THEME = {
   selection: { color: [50, 50, 50], alpha: 0.5 },
   palette: [],
 } as const;
+
+const DOCS: TerminalLinkTarget = { kind: "url", url: "https://terax.dev/docs" };
+const CHANGELOG: TerminalLinkTarget = {
+  kind: "url",
+  url: "https://terax.dev/changelog",
+};
+/** Cmd on macOS, Ctrl elsewhere — the surface reads the real platform. */
+const MODIFIER = IS_MAC
+  ? { metaKey: true, ctrlKey: false }
+  : { metaKey: false, ctrlKey: true };
+
+function pointerEvent(type: string, init: Record<string, unknown>): Event {
+  return Object.assign(new Event(type, { cancelable: true }), {
+    pointerId: 1,
+    button: 0,
+    buttons: 1,
+    detail: 1,
+    metaKey: false,
+    ctrlKey: false,
+    shiftKey: false,
+    altKey: false,
+    ...init,
+  });
+}
 
 function renderer() {
   return {
@@ -112,9 +210,22 @@ function harness() {
       append: vi.fn(),
       appendChild: vi.fn(),
       remove: vi.fn(),
-      getBoundingClientRect: () => ({ width: 960, height: 640 }),
+      focus: vi.fn(),
+      contains: () => false,
+      setPointerCapture: vi.fn(),
+      hasPointerCapture: () => false,
+      releasePointerCapture: vi.fn(),
+      getBoundingClientRect: () => ({
+        width: 960,
+        height: 640,
+        left: 0,
+        top: 0,
+        right: 960,
+        bottom: 640,
+      }),
     });
   const media = new EventTarget();
+  vi.stubGlobal("Node", EventTarget);
   vi.stubGlobal("document", { createElement: element });
   vi.stubGlobal("window", {
     devicePixelRatio: 1,
@@ -145,11 +256,21 @@ function harness() {
     interact: vi.fn(),
     trimForHiddenDocument: vi.fn(),
   };
+  const content = { origin: 0, revision: 0 };
+  const links = new Map<string, TerminalLinkTarget>();
   const model = {
     cols: 120,
     rows: 40,
     setCursorOptions: vi.fn(),
-    revision: () => 0,
+    revision: () => content.revision,
+    linkAtViewportCell: vi.fn(
+      (row: number, column: number) =>
+        links.get(`${content.origin}:${row}:${column}`) ?? null,
+    ),
+    bufferLineAtViewportRow: (row: number) => content.origin + row,
+    wordRangeAt: () => ({ start: 0, end: 0 }),
+    lineEndColumn: () => 0,
+    setSelection: vi.fn(),
     subscribeDamage: () => () => {},
     trackedSelection: () => ({
       anchor: { line: 0, column: 0 },
@@ -158,7 +279,7 @@ function harness() {
     }),
     selectionText: () => "selected output",
     scrollPosition: () => ({ history: 0, offset: 0 }),
-    viewportOriginLine: () => 0,
+    viewportOriginLine: () => content.origin,
     modes: () => ({ alternateScreen: false }),
     setPixelSize: vi.fn(),
     resize: (cols: number, rows: number) => {
@@ -170,6 +291,7 @@ function harness() {
     consumeDamage: () => ({ kind: "none" }),
   };
   const onError = vi.fn();
+  const onOpenLink = vi.fn();
   const surface = new WebGlTerminalSurface({
     model: model as unknown as GhosttyTerminalModelApi,
     metrics: METRICS,
@@ -178,6 +300,8 @@ function harness() {
     cursorStyle: "block",
     onResize: vi.fn(),
     onError,
+    onOpenLink,
+    onRequestFocus: vi.fn(),
   });
   surfaces.push(surface);
   surface.attach(element() as unknown as HTMLElement);
@@ -186,7 +310,28 @@ function harness() {
     renderer: current,
     acquire,
     onError,
+    onOpenLink,
+    model,
     resize: () => resize(),
+    /** Places a link at a viewport cell as seen from one scroll origin. */
+    setLink(
+      origin: number,
+      row: number,
+      column: number,
+      target: TerminalLinkTarget,
+    ) {
+      links.set(`${origin}:${row}:${column}`, target);
+    },
+    /** Scrolls the viewport the way the wheel does: no revision bump. */
+    scrollTo: (origin: number) => {
+      content.origin = origin;
+    },
+    write: () => {
+      content.revision += 1;
+    },
+    render: () => surface.renderFrame(current as unknown as WebGlCellRenderer),
+    pointer: (type: string, init: Record<string, unknown>) =>
+      surface.eventTarget().dispatchEvent(pointerEvent(type, init)),
     trigger(trigger: "theme" | "font" | "resume" | "dpr") {
       if (trigger === "theme")
         surface.setTheme({ ...THEME, background: [1, 2, 3] });

@@ -117,6 +117,8 @@ export class WebGlTerminalSurface
   private recoveringRenderer = false;
   private contentRevision: number;
   private hoveredCell = -1;
+  private hoveredOrigin = -1;
+  private hoveredRevision = -1;
   private hoveredLink: TerminalLinkTarget | null = null;
   private linkModifierHeld = false;
   private linkCursor = "text";
@@ -210,6 +212,7 @@ export class WebGlTerminalSurface
     this.root.addEventListener("pointermove", this.handleLinkPointerMove);
     this.root.addEventListener("pointerup", this.handleLinkPointerUp);
     this.root.addEventListener("pointerleave", this.handleLinkPointerLeave);
+    this.root.addEventListener("pointercancel", this.handleLinkPointerCancel);
     window.addEventListener("keydown", this.handleLinkModifierKey);
     window.addEventListener("keyup", this.handleLinkModifierKey);
     window.addEventListener("blur", this.handleLinkModifierLost);
@@ -398,7 +401,6 @@ export class WebGlTerminalSurface
     if (revision !== this.contentRevision) {
       this.contentRevision = revision;
       if (this.hoveredCell >= 0) this.clearHoveredLink();
-      this.linkPointerDown = null;
     }
     this.selection.reconcile();
     this.search.refreshOverlay();
@@ -496,6 +498,10 @@ export class WebGlTerminalSurface
     this.root.removeEventListener("pointermove", this.handleLinkPointerMove);
     this.root.removeEventListener("pointerup", this.handleLinkPointerUp);
     this.root.removeEventListener("pointerleave", this.handleLinkPointerLeave);
+    this.root.removeEventListener(
+      "pointercancel",
+      this.handleLinkPointerCancel,
+    );
     window.removeEventListener("keydown", this.handleLinkModifierKey);
     window.removeEventListener("keyup", this.handleLinkModifierKey);
     window.removeEventListener("blur", this.handleLinkModifierLost);
@@ -515,8 +521,8 @@ export class WebGlTerminalSurface
 
   private readonly handleLinkPointerUp = (event: PointerEvent): void => {
     const down = this.linkPointerDown;
-    this.linkPointerDown = null;
     if (!down || down.pointerId !== event.pointerId) return;
+    this.linkPointerDown = null;
     this.updateHoveredLink(event);
     const target = this.hoveredLink;
     if (
@@ -540,6 +546,11 @@ export class WebGlTerminalSurface
   private readonly handleLinkPointerLeave = (): void => {
     this.linkPointerDown = null;
     this.clearHoveredLink();
+  };
+
+  /** A cancelled pointer never delivers a pointerup, so the gesture ends here. */
+  private readonly handleLinkPointerCancel = (): void => {
+    this.linkPointerDown = null;
   };
 
   private readonly handleLinkModifierKey = (event: KeyboardEvent): void => {
@@ -675,8 +686,18 @@ export class WebGlTerminalSurface
       return;
     }
     const cell = row * this.options.model.cols + column;
-    if (cell !== this.hoveredCell) {
+    // Scrolling moves content under a stationary pointer without emitting a
+    // pointermove, so the memo keys on what the link was resolved against.
+    const origin = this.options.model.viewportOriginLine();
+    const revision = this.options.model.revision();
+    if (
+      cell !== this.hoveredCell ||
+      origin !== this.hoveredOrigin ||
+      revision !== this.hoveredRevision
+    ) {
       this.hoveredCell = cell;
+      this.hoveredOrigin = origin;
+      this.hoveredRevision = revision;
       this.hoveredLink = this.options.model.linkAtViewportCell(row, column);
     }
     this.applyLinkCursor();
@@ -691,6 +712,8 @@ export class WebGlTerminalSurface
 
   private clearHoveredLink(): void {
     this.hoveredCell = -1;
+    this.hoveredOrigin = -1;
+    this.hoveredRevision = -1;
     this.hoveredLink = null;
     this.applyLinkCursor();
   }

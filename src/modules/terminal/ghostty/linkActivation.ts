@@ -1,8 +1,11 @@
 import type { TerminalLinkTarget } from "@/modules/terminal/ghostty/core/terminalLinks";
 
-/** CSS pixels the pointer may travel between down and up and still count as a
- * click rather than a drag-select. */
-export const LINK_ACTIVATION_MOVE_TOLERANCE_PX = 3;
+/** CSS pixels the pointer may travel between down and up and still open the
+ * link. A modifier drag that starts over a link never selects text, because
+ * TerminalSelectionController yields the pointer before it anchors, so this
+ * only separates a click from a deliberate drag and can be generous. A
+ * physical trackpad click drifts several pixels, a force click more. */
+export const LINK_ACTIVATION_MOVE_TOLERANCE_PX = 6;
 
 export type LinkActivationAttempt = {
   readonly button: number;
@@ -49,6 +52,6 @@ export function shouldActivateLink(attempt: LinkActivationAttempt): boolean {
     Math.hypot(
       attempt.upPoint.x - attempt.downPoint.x,
       attempt.upPoint.y - attempt.downPoint.y,
-    ) < LINK_ACTIVATION_MOVE_TOLERANCE_PX
+    ) <= LINK_ACTIVATION_MOVE_TOLERANCE_PX
   );
 }
