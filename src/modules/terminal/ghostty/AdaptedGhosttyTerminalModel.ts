@@ -46,6 +46,12 @@ const MAX_SCROLLBACK_BYTES = 64 * 1024 * 1024;
 const APPROXIMATE_BYTES_PER_SCROLLBACK_CELL = 8;
 const NO_DAMAGE: TerminalDamage = { kind: "none" };
 const FULL_DAMAGE: TerminalDamage = { kind: "full" };
+// A wrapped run longer than this is split into fixed chunks counted from the
+// run start, so the rows a lookup is cached for never depend on which row was
+// hovered first. Neighbouring chunks are joined in as context when the text is
+// built, so a link is never cut at a chunk seam.
+const LINK_CHUNK_ROWS = 16;
+const LINK_CONTEXT_ROWS = 16;
 
 type BufferLine = {
   readonly cells: string[];
@@ -80,6 +86,7 @@ export class AdaptedGhosttyTerminalModel implements GhosttyTerminalModelApi {
     cols: number;
     startRow: number;
     endRow: number;
+    textStartRow: number;
     offsets: number[];
     links: readonly TerminalLinkMatch[];
   } | null = null;
@@ -397,19 +404,20 @@ export class AdaptedGhosttyTerminalModel implements GhosttyTerminalModelApi {
       row < cache.startRow ||
       row > cache.endRow
     ) {
-      let startRow = row;
-      let endRow = row;
-      while (startRow > 0 && row - startRow < 8 && state.rowWrapped[startRow])
-        startRow--;
-      while (
-        endRow + 1 < state.rows &&
-        endRow - startRow < 8 &&
-        state.rowWrapped[endRow + 1]
-      )
-        endRow++;
+      // The window is anchored on the wrapped run rather than on the hovered
+      // row, so every row of the run resolves against identical text.
+      let runStart = row;
+      let runEnd = row;
+      while (runStart > 0 && state.rowWrapped[runStart]) runStart--;
+      while (runEnd + 1 < state.rows && state.rowWrapped[runEnd + 1]) runEnd++;
+      const chunk = Math.floor((row - runStart) / LINK_CHUNK_ROWS);
+      const startRow = runStart + chunk * LINK_CHUNK_ROWS;
+      const endRow = Math.min(runEnd, startRow + LINK_CHUNK_ROWS - 1);
+      const textStartRow = Math.max(runStart, startRow - LINK_CONTEXT_ROWS);
+      const textEndRow = Math.min(runEnd, endRow + LINK_CONTEXT_ROWS);
       let text = "";
       const offsets: number[] = [];
-      for (let y = startRow; y <= endRow; y++) {
+      for (let y = textStartRow; y <= textEndRow; y++) {
         for (let x = 0; x < state.cols; x++) {
           offsets.push(text.length);
           const index = y * state.cols + x;
@@ -423,12 +431,14 @@ export class AdaptedGhosttyTerminalModel implements GhosttyTerminalModelApi {
         cols: state.cols,
         startRow,
         endRow,
+        textStartRow,
         offsets,
         links: detectTerminalLinks(text),
       };
       this.plainLinks = cache;
     }
-    const offset = cache.offsets[(row - cache.startRow) * state.cols + column];
+    const offset =
+      cache.offsets[(row - cache.textStartRow) * state.cols + column];
     return (
       cache.links.find((link) => offset >= link.start && offset < link.end)
         ?.target ?? null

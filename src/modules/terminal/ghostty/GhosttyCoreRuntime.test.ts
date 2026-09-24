@@ -650,6 +650,140 @@ describe("GhosttyCoreRuntime", () => {
     runtime.dispose();
   });
 
+  it("resolves a URL that spans a wrapped run deeper than the per-row walk", async () => {
+    const runtime = new GhosttyCoreRuntime(() =>
+      TeraxGhostty.loadBytes(wasmBytes.slice(0)),
+    );
+    const model = await runtime.createModel({ leafId: 32, cols: 10, rows: 14 });
+    const url = `https://example.com/${"a".repeat(70)}`;
+    model.write(new TextEncoder().encode(`${"x".repeat(30)}${url}`));
+
+    // The URL covers rows 3..11; every row inside it answers identically.
+    for (const row of [3, 6, 9, 11]) {
+      expect(model.linkAtViewportCell(row, 5)).toEqual({ kind: "url", url });
+    }
+    expect(model.linkAtViewportCell(0, 5)).toBeNull();
+    runtime.dispose();
+  });
+
+  it("resolves a wrapped link the same way regardless of which row is visited first", async () => {
+    const runtime = new GhosttyCoreRuntime(() =>
+      TeraxGhostty.loadBytes(wasmBytes.slice(0)),
+    );
+    const url = `https://example.com/${"a".repeat(70)}`;
+    const payload = new TextEncoder().encode(`${"x".repeat(30)}${url}`);
+    const topFirst = await runtime.createModel({
+      leafId: 33,
+      cols: 10,
+      rows: 14,
+    });
+    const bottomFirst = await runtime.createModel({
+      leafId: 34,
+      cols: 10,
+      rows: 14,
+    });
+    topFirst.write(payload);
+    bottomFirst.write(payload);
+
+    topFirst.linkAtViewportCell(3, 0);
+    bottomFirst.linkAtViewportCell(11, 9);
+
+    expect(topFirst.linkAtViewportCell(8, 4)).toEqual(
+      bottomFirst.linkAtViewportCell(8, 4),
+    );
+    expect(topFirst.linkAtViewportCell(8, 4)).toEqual({ kind: "url", url });
+    runtime.dispose();
+  });
+
+  it("resolves a URL straddling a chunk seam of a very long wrapped run", async () => {
+    const runtime = new GhosttyCoreRuntime(() =>
+      TeraxGhostty.loadBytes(wasmBytes.slice(0)),
+    );
+    const url = `https://example.com/${"b".repeat(20)}`;
+    // 28 wrapped rows of 8 columns; the URL covers rows 15..19, so it crosses
+    // the row-16 boundary the run is chunked on.
+    const payload = new TextEncoder().encode(
+      `${"x".repeat(119)} ${url} ${"y".repeat(63)}`,
+    );
+    const aboveFirst = await runtime.createModel({
+      leafId: 37,
+      cols: 8,
+      rows: 30,
+    });
+    const belowFirst = await runtime.createModel({
+      leafId: 38,
+      cols: 8,
+      rows: 30,
+    });
+    aboveFirst.write(payload);
+    belowFirst.write(payload);
+
+    aboveFirst.linkAtViewportCell(15, 0);
+    belowFirst.linkAtViewportCell(19, 7);
+
+    for (const row of [15, 17, 19]) {
+      expect(aboveFirst.linkAtViewportCell(row, 2)).toEqual({
+        kind: "url",
+        url,
+      });
+      expect(belowFirst.linkAtViewportCell(row, 2)).toEqual({
+        kind: "url",
+        url,
+      });
+    }
+    expect(aboveFirst.linkAtViewportCell(25, 2)).toBeNull();
+    runtime.dispose();
+  });
+
+  it("resolves a link that begins above and ends below the hovered row", async () => {
+    const runtime = new GhosttyCoreRuntime(() =>
+      TeraxGhostty.loadBytes(wasmBytes.slice(0)),
+    );
+    const model = await runtime.createModel({ leafId: 35, cols: 12, rows: 4 });
+    const url = "https://example.com/deep/path";
+    model.write(new TextEncoder().encode(`aa${url}`));
+
+    // Row 1 holds only the middle of the URL, which starts on row 0.
+    expect(model.linkAtViewportCell(1, 5)).toEqual({ kind: "url", url });
+    expect(model.linkAtViewportCell(0, 3)).toEqual({ kind: "url", url });
+    expect(model.linkAtViewportCell(2, 6)).toEqual({ kind: "url", url });
+    runtime.dispose();
+  });
+
+  it("re-resolves links for the same viewport row after scrolling", async () => {
+    const runtime = new GhosttyCoreRuntime(() =>
+      TeraxGhostty.loadBytes(wasmBytes.slice(0)),
+    );
+    const model = await runtime.createModel({ leafId: 36, cols: 24, rows: 3 });
+    model.write(
+      new TextEncoder().encode(
+        [
+          "https://example.com/top",
+          "one",
+          "two",
+          "three",
+          "four",
+          "https://example.com/bot",
+        ].join("\r\n"),
+      ),
+    );
+
+    const history = model.scrollPosition().history;
+    expect(history).toBeGreaterThan(0);
+    expect(model.linkAtViewportCell(0, 0)).toBeNull();
+    expect(model.linkAtViewportCell(2, 0)).toEqual({
+      kind: "url",
+      url: "https://example.com/bot",
+    });
+
+    expect(model.scrollTo(history)).toBe(true);
+    expect(model.linkAtViewportCell(0, 0)).toEqual({
+      kind: "url",
+      url: "https://example.com/top",
+    });
+    runtime.dispose();
+  });
+
   it("updates model colors in place without changing terminal content", async () => {
     const runtime = new GhosttyCoreRuntime(() =>
       TeraxGhostty.loadBytes(wasmBytes.slice(0)),
