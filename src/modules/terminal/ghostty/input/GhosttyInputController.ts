@@ -17,6 +17,9 @@ import { encodeTerminalPaste } from "./terminalInputEncoding";
 import { TerminalNativeSelection } from "@/modules/terminal/ghostty/input/TerminalNativeSelection";
 
 const DUPLICATE_INPUT_WINDOW_MS = 75;
+// WheelEvent.deltaMode values, inlined so the controller runs outside a DOM.
+const DOM_DELTA_LINE = 1;
+const DOM_DELTA_PAGE = 2;
 
 const KEY_MAP: Readonly<Record<string, Key>> = {
   KeyA: Key.A,
@@ -484,6 +487,10 @@ export class GhosttyInputController {
       const position = this.mousePosition(event);
       if (!position) return;
       consume(event);
+      // One report per wheel event, like xterm: apps (e.g. Claude Code) apply
+      // their own lines-per-tick, so scaling reports by pixel delta makes
+      // trackpad and momentum scrolling far too fast.
+      if (event.deltaY === 0) return;
       this.sendMouse(
         event.deltaY < 0 ? 64 : 65,
         position.col,
@@ -495,11 +502,18 @@ export class GhosttyInputController {
     }
 
     if (this.options.model.scrollPosition().history === 0) return;
+    const lines = this.wheelLines(event);
+    if (lines !== 0) this.options.model.scrollBy(lines);
+    consume(event);
+  };
+
+  /** Accumulates wheel deltas and returns the whole lines scrolled so far. */
+  private wheelLines(event: WheelEvent): number {
     const cellHeight = Math.max(1, this.options.cellSize().height);
     const delta =
-      event.deltaMode === WheelEvent.DOM_DELTA_LINE
+      event.deltaMode === DOM_DELTA_LINE
         ? event.deltaY
-        : event.deltaMode === WheelEvent.DOM_DELTA_PAGE
+        : event.deltaMode === DOM_DELTA_PAGE
           ? event.deltaY * this.options.model.rows
           : event.deltaY / cellHeight;
     this.wheelRemainder += delta;
@@ -508,9 +522,8 @@ export class GhosttyInputController {
         ? Math.ceil(this.wheelRemainder)
         : Math.floor(this.wheelRemainder);
     this.wheelRemainder -= lines;
-    if (lines !== 0) this.options.model.scrollBy(lines);
-    consume(event);
-  };
+    return lines;
+  }
 
   private mousePosition(
     event: MouseEvent,

@@ -446,6 +446,47 @@ describe("GhosttyInputController", () => {
     );
     controller.dispose();
   });
+
+  it("reports one wheel step per event, however large the pixel delta", () => {
+    const input = new FakeTextArea();
+    const pointerTarget = new FakeElement();
+    const onData = vi.fn();
+    const controller = new GhosttyInputController({
+      model: inputModel((mode) => mode === 1006),
+      input: input as unknown as HTMLTextAreaElement,
+      pointerTarget: pointerTarget as unknown as HTMLElement,
+      cellSize: () => ({ width: 10, height: 20 }),
+      onData,
+      onCopy: () => false,
+      isMac: false,
+    });
+
+    // Fast trackpad/momentum events carry many rows of pixel delta each; the
+    // app applies its own lines-per-tick, so each event must be one report.
+    for (const deltaY of [120, 200, 3]) {
+      const event = wheelEvent({ clientX: 15, clientY: 25, deltaY });
+      pointerTarget.dispatchEvent(event);
+      expect(event.defaultPrevented).toBe(true);
+    }
+    pointerTarget.dispatchEvent(
+      wheelEvent({ clientX: 15, clientY: 25, deltaY: -5, deltaMode: 1 }),
+    );
+    // Pure horizontal swipes do not report a vertical scroll.
+    pointerTarget.dispatchEvent(
+      wheelEvent({ clientX: 15, clientY: 25, deltaX: 40, deltaY: 0 }),
+    );
+
+    const reports = onData.mock.calls.map(([bytes]) =>
+      new TextDecoder().decode(bytes),
+    );
+    expect(reports).toEqual([
+      "\x1b[<65;2;2M",
+      "\x1b[<65;2;2M",
+      "\x1b[<65;2;2M",
+      "\x1b[<64;2;2M",
+    ]);
+    controller.dispose();
+  });
 });
 
 describe("clipboard image paste", () => {
@@ -660,4 +701,13 @@ function mouseEvent(type: string, values: Partial<MouseEvent>): MouseEvent {
     shiftKey: false,
     ...values,
   }) as MouseEvent;
+}
+
+function wheelEvent(values: Partial<WheelEvent>): WheelEvent {
+  return Object.assign(mouseEvent("wheel", {}), {
+    deltaMode: 0,
+    deltaX: 0,
+    deltaY: 0,
+    ...values,
+  }) as WheelEvent;
 }
