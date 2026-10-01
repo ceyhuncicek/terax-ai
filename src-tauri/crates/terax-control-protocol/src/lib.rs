@@ -7,12 +7,14 @@ pub const METHOD_PING: &str = "ping";
 pub const METHOD_CAPABILITIES: &str = "capabilities";
 pub const METHOD_IDENTIFY: &str = "identify";
 pub const METHOD_OPEN: &str = "open";
+pub const METHOD_CD: &str = "cd";
 pub const SERVER_RESPONSE_ID: &str = "server";
 pub const METHODS: &[&str] = &[
     METHOD_PING,
     METHOD_CAPABILITIES,
     METHOD_IDENTIFY,
     METHOD_OPEN,
+    METHOD_CD,
 ];
 
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
@@ -122,6 +124,14 @@ pub struct OpenParams {
     pub focus: bool,
 }
 
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct CdParams {
+    pub path: String,
+    // The frontend may still refuse: a background pane must not steal the view.
+    #[serde(default = "default_focus")]
+    pub focus: bool,
+}
+
 fn default_focus() -> bool {
     true
 }
@@ -173,7 +183,7 @@ mod tests {
 
     #[test]
     fn methods_catalog_matches_the_wire_literals() {
-        assert_eq!(METHODS, &["ping", "capabilities", "identify", "open"]);
+        assert_eq!(METHODS, &["ping", "capabilities", "identify", "open", "cd"]);
     }
 
     #[test]
@@ -272,5 +282,17 @@ mod tests {
         assert_eq!(back.token, "tok");
         assert_eq!(back.pid, 4242);
         assert_eq!(back.app_version, "0.8.6");
+    }
+
+    #[test]
+    fn cd_defaults_to_focusing_the_target() {
+        let params: CdParams =
+            serde_json::from_value(json!({ "path": "/tmp/a" })).expect("deserialize cd params");
+        assert!(params.focus);
+    }
+
+    #[test]
+    fn methods_include_cd() {
+        assert!(METHODS.contains(&METHOD_CD));
     }
 }

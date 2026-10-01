@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
 import type { Tab } from "@/modules/tabs/lib/useTabs";
+import { describe, expect, it } from "vitest";
 import { resolveControlContext } from "./context";
 
 const tabs: Tab[] = [
@@ -38,6 +38,7 @@ describe("resolveControlContext", () => {
       tab_id: 10,
       pane_id: 13,
       source: "caller",
+      foreground: false,
     });
   });
 
@@ -48,12 +49,37 @@ describe("resolveControlContext", () => {
       tab_id: 20,
       pane_id: null,
       source: "active",
+      foreground: false,
     });
   });
 
   it("does not trust a stale caller pane id", () => {
     expect(resolveControlContext(tabs, 20, "active-space", 999).source).toBe(
       "active",
+    );
+  });
+
+  it("marks the active leaf of the active tab as foreground", () => {
+    expect(resolveControlContext(tabs, 10, "agent-space", 12).foreground).toBe(
+      true,
+    );
+  });
+
+  it("keeps a sibling pane of the active tab in the background", () => {
+    expect(resolveControlContext(tabs, 10, "agent-space", 13).foreground).toBe(
+      false,
+    );
+  });
+
+  it("keeps a pane of a non-active tab in the background", () => {
+    expect(resolveControlContext(tabs, 20, "active-space", 12).foreground).toBe(
+      false,
+    );
+  });
+
+  it("never treats the no-pane-id fallback as foreground", () => {
+    expect(resolveControlContext(tabs, 10, "agent-space").foreground).toBe(
+      false,
     );
   });
 });

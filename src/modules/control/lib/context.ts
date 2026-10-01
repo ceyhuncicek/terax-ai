@@ -7,6 +7,8 @@ export type ControlContext = {
   tab_id: number | null;
   pane_id: number | null;
   source: "caller" | "active";
+  /** The caller is the pane the user is looking at right now. */
+  foreground: boolean;
 };
 
 export function resolveControlContext(
@@ -26,6 +28,11 @@ export function resolveControlContext(
         tab_id: callerTab.id,
         pane_id: callerPaneId,
         source: "caller",
+        // Leaf, not just tab: an agent group packs several agents into one tab,
+        // so a background sibling pane shares the active tab's id.
+        foreground:
+          callerTab.id === activeTabId &&
+          callerTab.activeLeafId === callerPaneId,
       };
     }
   }
@@ -37,5 +44,9 @@ export function resolveControlContext(
     tab_id: activeTab?.id ?? null,
     pane_id: activeTab?.kind === "terminal" ? activeTab.activeLeafId : null,
     source: "active",
+    // Anyone can omit pane_id, so granting foreground here would hand a raw
+    // protocol speaker the right to steal focus. Panes inside Terax always
+    // carry TERAX_PANE_ID, so only an external shell pays for this.
+    foreground: false,
   };
 }

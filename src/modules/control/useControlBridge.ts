@@ -32,12 +32,20 @@ type OpenRequest = {
   focus: boolean;
 };
 
+type CdRequest = {
+  path: string;
+  focus: boolean;
+};
+
 type UseControlBridgeOptions = {
   ready: boolean;
   tabsRef: RefObject<Tab[]>;
   activeTabIdRef: RefObject<number>;
   activeSpaceIdRef: RefObject<string | null>;
   onOpen: (request: OpenRequest & { spaceId: string }) => number | null;
+  onCd: (
+    request: CdRequest & { spaceId: string; foreground: boolean },
+  ) => number | null;
 };
 
 class RequestError extends Error {
@@ -79,6 +87,24 @@ export function parseOpenRequest(params: unknown): OpenRequest {
   };
 }
 
+// Exported solely so it can be unit tested, like parseOpenRequest.
+export function parseCdRequest(params: unknown): CdRequest {
+  if (typeof params !== "object" || params === null) {
+    throw new RequestError("invalid_params", "cd parameters are required");
+  }
+  const value = params as Record<string, unknown>;
+  if (typeof value.path !== "string" || value.path.length === 0) {
+    throw new RequestError("invalid_params", "cd path is required");
+  }
+  if (value.focus !== undefined && typeof value.focus !== "boolean") {
+    throw new RequestError("invalid_params", "focus must be a boolean");
+  }
+  return {
+    path: value.path,
+    focus: (value.focus as boolean | undefined) ?? true,
+  };
+}
+
 const setFrontendReady = createReadinessQueue((ready) =>
   invoke("control_frontend_ready", { ready }),
 );
@@ -102,6 +128,7 @@ export function useControlBridge({
   activeTabIdRef,
   activeSpaceIdRef,
   onOpen,
+  onCd,
 }: UseControlBridgeOptions): void {
   useEffect(() => {
     if (!ready) return;
@@ -156,6 +183,33 @@ export function useControlBridge({
           });
           return;
         }
+        if (request.method === "cd") {
+          const cd = parseCdRequest(request.params);
+          // Deliberately never raises the window: a background agent changing
+          // directory must not pull the user away from what they are doing.
+          const activated = cd.focus && context.foreground;
+          const tabId = onCd({
+            ...cd,
+            spaceId: context.space_id,
+            foreground: activated,
+          });
+          if (tabId === null) {
+            throw new RequestError(
+              "cd_failed",
+              "Terax could not create a terminal tab",
+            );
+          }
+          await respond(request.id, {
+            ok: true,
+            result: {
+              path: cd.path,
+              tab_id: tabId,
+              space_id: context.space_id,
+              activated,
+            },
+          });
+          return;
+        }
         throw new RequestError(
           "unknown_method",
           `unsupported frontend method '${request.method}'`,
@@ -195,5 +249,5 @@ export function useControlBridge({
         console.error("[terax] control bridge cleanup failed:", error);
       });
     };
-  }, [ready, tabsRef, activeTabIdRef, activeSpaceIdRef, onOpen]);
+  }, [ready, tabsRef, activeTabIdRef, activeSpaceIdRef, onOpen, onCd]);
 }

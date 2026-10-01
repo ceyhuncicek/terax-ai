@@ -538,6 +538,34 @@ function coldTerminalTab(
   };
 }
 
+// Plans a terminal tab for `cwd`, reusing the lowest-id match in the same space
+// so repeated requests for one directory land on one tab instead of piling up.
+export function planDirectoryTabOpen(
+  tabs: Tab[],
+  cwd: string,
+  spaceId: string,
+  allocId: () => number,
+): { tabs: Tab[]; tabId: number; created: boolean } {
+  let existing: TerminalTab | undefined;
+  for (const tab of tabs) {
+    if (tab.kind !== "terminal" || tab.spaceId !== spaceId || tab.cwd !== cwd) {
+      continue;
+    }
+    // A private tab is the user's own, so a background agent must not pull it
+    // to the front just because the directory happens to match.
+    if (tab.private) continue;
+    if (!existing || tab.id < existing.id) existing = tab;
+  }
+  if (existing) return { tabs, tabId: existing.id, created: false };
+
+  const tabId = allocId();
+  return {
+    tabs: [...tabs, coldTerminalTab(tabId, allocId(), spaceId, cwd)],
+    tabId,
+    created: true,
+  };
+}
+
 // Plans the removal of a deleted space's tabs while keeping the invariant that
 // the now-active `fallbackSpaceId` always has at least one tab (a cold one is
 // spawned when it would be left empty). Returns null when nothing to remove.
@@ -853,6 +881,34 @@ export function useTabs(initial?: Partial<TerminalTab>) {
       tabsRef.current = plan.tabs;
       setTabs(plan.tabs);
       if (activate) setActiveId(plan.tabId);
+      return plan.tabId;
+    },
+    [],
+  );
+
+  /**
+   * Opens (or reuses) a terminal tab parked at `cwd`. The tab starts cold, so a
+   * background agent costs nothing until someone actually opens it.
+   *
+   * Mirrors tabsRef synchronously like openFileTab rather than taking newTab's
+   * functional-update route: two requests arriving in the same tick would both
+   * read the stale ref, miss the reuse check and open duplicate tabs.
+   */
+  const openDirectoryTab = useCallback(
+    (
+      cwd: string,
+      options: { spaceId?: string; activate?: boolean } = {},
+    ): number => {
+      const targetSpaceId = options.spaceId ?? activeSpaceIdRef.current;
+      const plan = planDirectoryTabOpen(
+        tabsRef.current,
+        cwd,
+        targetSpaceId,
+        () => nextIdRef.current++,
+      );
+      tabsRef.current = plan.tabs;
+      setTabs(plan.tabs);
+      if (options.activate ?? true) setActiveId(plan.tabId);
       return plan.tabId;
     },
     [],
@@ -1425,6 +1481,7 @@ export function useTabs(initial?: Partial<TerminalTab>) {
     newAgentGroupTab,
     newPrivateTab,
     openFileTab,
+    openDirectoryTab,
     pinTab,
     newPreviewTab,
     newMarkdownTab,

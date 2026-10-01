@@ -9,8 +9,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::{json, Value};
 use terax_control_protocol::{
-    CallerContext, ControlDescriptor, ControlRequest, ControlResponse, OpenParams,
-    MAX_MESSAGE_BYTES, METHOD_CAPABILITIES, METHOD_IDENTIFY, METHOD_OPEN, METHOD_PING,
+    CallerContext, CdParams, ControlDescriptor, ControlRequest, ControlResponse, OpenParams,
+    MAX_MESSAGE_BYTES, METHOD_CAPABILITIES, METHOD_CD, METHOD_IDENTIFY, METHOD_OPEN, METHOD_PING,
     PROTOCOL_VERSION, SERVER_RESPONSE_ID,
 };
 
@@ -133,6 +133,7 @@ fn parse_args(mut args: Vec<OsString>) -> Result<Config, CliError> {
         Some("capabilities") => request_without_params(args, METHOD_CAPABILITIES)?,
         Some("identify") => request_without_params(args, METHOD_IDENTIFY)?,
         Some("open") => parse_open(args)?,
+        Some("cd") => parse_cd(args)?,
         Some("--") => {
             args.insert(0, command);
             parse_open(args)?
@@ -256,6 +257,60 @@ fn parse_open(args: Vec<OsString>) -> Result<Action, CliError> {
     })?;
     Ok(Action::Request {
         method: METHOD_OPEN,
+        params,
+    })
+}
+
+fn parse_cd(args: Vec<OsString>) -> Result<Action, CliError> {
+    let mut path: Option<OsString> = None;
+    let mut focus = true;
+    let mut options = true;
+    let mut index = 0;
+    while index < args.len() {
+        let arg = &args[index];
+        match arg.to_str() {
+            Some("--") if options => options = false,
+            Some("--no-focus") if options => focus = false,
+            Some(value) if options && value.starts_with('-') => {
+                return Err(usage_error(format!("unknown cd option '{value}'")));
+            }
+            _ if path.is_none() => path = Some(arg.clone()),
+            _ => return Err(usage_error("cd accepts exactly one directory")),
+        }
+        index += 1;
+    }
+
+    let path = path.ok_or_else(|| usage_error("cd requires a directory"))?;
+    let canonical = std::fs::canonicalize(PathBuf::from(path)).map_err(|error| {
+        CliError::new(
+            "path_not_found",
+            format!("cannot resolve directory: {error}"),
+            EXIT_USAGE,
+        )
+    })?;
+    if !canonical.is_dir() {
+        return Err(CliError::new(
+            "not_a_directory",
+            format!("path is not a directory: {}", canonical.display()),
+            EXIT_USAGE,
+        ));
+    }
+    let path = canonical.into_os_string().into_string().map_err(|_| {
+        CliError::new(
+            "non_utf8_path",
+            "Terax cannot follow a path that is not valid UTF-8",
+            EXIT_USAGE,
+        )
+    })?;
+    let params = serde_json::to_value(CdParams { path, focus }).map_err(|error| {
+        CliError::new(
+            "serialization_error",
+            format!("could not encode cd request: {error}"),
+            EXIT_PROTOCOL,
+        )
+    })?;
+    Ok(Action::Request {
+        method: METHOD_CD,
         params,
     })
 }
@@ -534,6 +589,20 @@ fn print_result(method: &str, result: Value, as_json: bool) {
                 println!("Opened {path} in Terax");
             }
         }
+        METHOD_CD => {
+            let path = result.get("path").and_then(Value::as_str).unwrap_or("");
+            // A background pane gets a tab but no view switch, so say so rather
+            // than claiming Terax is following the directory.
+            if result
+                .get("activated")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+            {
+                println!("Now following {path} in Terax");
+            } else {
+                println!("Terax opened {path} in a background tab");
+            }
+        }
         _ => println!("{result}"),
     }
 }
@@ -541,7 +610,7 @@ fn print_result(method: &str, result: Value, as_json: bool) {
 fn print_help() {
     println!(
         "Terax command line interface\n\n\
-Usage:\n  terax <file> [--line <n>] [--no-focus] [--json]\n  terax open <file> [--line <n>] [--no-focus] [--json]\n  terax ping [--json]\n  terax capabilities [--json]\n  terax identify [--json]\n  terax --version\n\n\
+Usage:\n  terax <file> [--line <n>] [--no-focus] [--json]\n  terax open <file> [--line <n>] [--no-focus] [--json]\n  terax cd <dir> [--no-focus] [--json]\n  terax ping [--json]\n  terax capabilities [--json]\n  terax identify [--json]\n  terax --version\n\n\
 The app must be running. Commands launched in a Terax pane target that pane's space."
     );
 }
@@ -611,6 +680,56 @@ mod tests {
                 .to_string_lossy()
                 .as_ref()
         );
+    }
+
+    #[test]
+    fn parses_cd_with_a_directory() {
+        let dir = tempfile::tempdir().expect("temp directory");
+        let config =
+            parse_args(vec!["cd".into(), dir.path().as_os_str().to_owned()]).expect("parse cd");
+        let Action::Request { method, params } = config.action else {
+            panic!("expected request action");
+        };
+        assert_eq!(method, METHOD_CD);
+        assert_eq!(params["focus"], true);
+        assert_eq!(
+            params["path"],
+            std::fs::canonicalize(dir.path())
+                .expect("canonical temp dir")
+                .to_string_lossy()
+                .as_ref()
+        );
+    }
+
+    #[test]
+    fn cd_rejects_a_file_path() {
+        let file = tempfile::NamedTempFile::new().expect("temp file");
+        let error = parse_args(vec!["cd".into(), file.path().as_os_str().to_owned()])
+            .expect_err("reject file");
+        assert_eq!(error.code, "not_a_directory");
+        assert_eq!(error.exit, EXIT_USAGE);
+    }
+
+    #[test]
+    fn cd_honours_no_focus() {
+        let dir = tempfile::tempdir().expect("temp directory");
+        let config = parse_args(vec![
+            "cd".into(),
+            dir.path().as_os_str().to_owned(),
+            "--no-focus".into(),
+        ])
+        .expect("parse cd");
+        let Action::Request { params, .. } = config.action else {
+            panic!("expected request action");
+        };
+        assert_eq!(params["focus"], false);
+    }
+
+    #[test]
+    fn cd_without_a_path_is_a_usage_error() {
+        let error = parse_args(args(&["cd"])).expect_err("reject missing directory");
+        assert_eq!(error.code, "usage");
+        assert_eq!(error.message, "cd requires a directory");
     }
 
     #[test]

@@ -74,8 +74,8 @@ import {
 } from "@/modules/spaces";
 import { StatusBar } from "@/modules/statusbar";
 import {
-  TabSwitcherHud,
   type CloseTabsPlan,
+  TabSwitcherHud,
   useTabSwitcher,
   useTabs,
   useWindowTitle,
@@ -129,12 +129,12 @@ import {
   WorkspaceInputBar,
 } from "./components/WorkspaceInputBar";
 import { WorkspaceSurface } from "./components/WorkspaceSurface";
-import { useAppCloseGuard } from "./hooks/useAppCloseGuard";
 import {
   hasOpenPathTab,
   renamedPath,
   spacesEmptiedByTabs,
 } from "./hooks/tabCloseGuards";
+import { useAppCloseGuard } from "./hooks/useAppCloseGuard";
 import { useTabCloseGuards } from "./hooks/useTabCloseGuards";
 import { useWorkspaceSwitcher } from "./hooks/useWorkspaceSwitcher";
 
@@ -159,6 +159,7 @@ export default function App() {
     newAgentGroupTab,
     newPrivateTab,
     openFileTab,
+    openDirectoryTab,
     pinTab,
     newPreviewTab,
     newMarkdownTab,
@@ -1347,6 +1348,26 @@ export default function App() {
     [openFileTab],
   );
 
+  // No workspaceAuthorize call here: the backend already required an authorized
+  // target, and the permissive authorizer would widen the root set.
+  const openControlDirectory = useCallback(
+    ({
+      path,
+      spaceId,
+      foreground,
+    }: {
+      path: string;
+      spaceId: string;
+      foreground: boolean;
+    }) => {
+      if (foreground && useSpaces.getState().activeId !== spaceId) {
+        useSpaces.getState().setActive(spaceId);
+      }
+      return openDirectoryTab(path, { spaceId, activate: foreground });
+    },
+    [openDirectoryTab],
+  );
+
   // Declared here rather than beside the terax:open-file listener because it
   // routes through openControlFile, which is defined just above.
   useEffect(() => {
@@ -1385,6 +1406,7 @@ export default function App() {
     activeTabIdRef: activeIdRef,
     activeSpaceIdRef,
     onOpen: openControlFile,
+    onCd: openControlDirectory,
   });
 
   useEffect(() => {
