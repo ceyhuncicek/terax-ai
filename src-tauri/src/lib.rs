@@ -333,6 +333,7 @@ pub fn run() {
             open_settings_window,
             agent::agent_enable_hooks,
             agent::agent_hooks_status,
+            agent::agent_follow_hook_status,
             secrets::secrets_get,
             secrets::secrets_set,
             secrets::secrets_delete,

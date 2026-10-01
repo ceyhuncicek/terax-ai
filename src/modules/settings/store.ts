@@ -177,6 +177,7 @@ export type Preferences = {
   zoomLevel: number;
   agentNotifications: boolean;
   agentNotificationSound: boolean;
+  agentFollowWorktrees: boolean;
   agentLaunchCommands: AgentLaunchCommands;
   defaultWorkspaceEnv: string;
   shortcuts: Record<ShortcutId, KeyBinding[]>;
@@ -276,6 +277,7 @@ const KEY_LAST_WSL_DISTRO = "lastWslDistro";
 const KEY_ZOOM_LEVEL = "zoomLevel";
 const KEY_AGENT_NOTIFICATIONS = "agentNotifications";
 const KEY_AGENT_NOTIFICATION_SOUND = "agentNotificationSound";
+const KEY_AGENT_FOLLOW_WORKTREES = "agentFollowWorktrees";
 const KEY_AGENT_LAUNCH_COMMANDS = "agentLaunchCommands";
 const KEY_DEFAULT_WORKSPACE_ENV = "defaultWorkspaceEnv";
 const KEY_SHORTCUTS = "shortcuts";
@@ -371,6 +373,7 @@ export const DEFAULT_PREFERENCES: Preferences = {
   zoomLevel: 1.0,
   agentNotifications: true,
   agentNotificationSound: true,
+  agentFollowWorktrees: true,
   agentLaunchCommands: DEFAULT_AGENT_LAUNCH_COMMANDS,
   defaultWorkspaceEnv: "local",
   shortcuts: {} as Record<ShortcutId, KeyBinding[]>,
@@ -565,6 +568,9 @@ export async function loadPreferences(): Promise<Preferences> {
     agentNotificationSound:
       get<boolean>(KEY_AGENT_NOTIFICATION_SOUND) ??
       DEFAULT_PREFERENCES.agentNotificationSound,
+    agentFollowWorktrees:
+      get<boolean>(KEY_AGENT_FOLLOW_WORKTREES) ??
+      DEFAULT_PREFERENCES.agentFollowWorktrees,
     agentLaunchCommands: normalizeAgentLaunchCommands(
       get<unknown>(KEY_AGENT_LAUNCH_COMMANDS),
     ),
@@ -967,6 +973,10 @@ export async function setAgentNotificationSound(value: boolean): Promise<void> {
   await writePref(KEY_AGENT_NOTIFICATION_SOUND, value);
 }
 
+export async function setAgentFollowWorktrees(value: boolean): Promise<void> {
+  await writePref(KEY_AGENT_FOLLOW_WORKTREES, value);
+}
+
 export async function setAgentLaunchCommands(
   value: AgentLaunchCommands,
 ): Promise<void> {
@@ -1053,6 +1063,7 @@ export async function onPreferencesChange(
     [KEY_ZOOM_LEVEL]: "zoomLevel",
     [KEY_AGENT_NOTIFICATIONS]: "agentNotifications",
     [KEY_AGENT_NOTIFICATION_SOUND]: "agentNotificationSound",
+    [KEY_AGENT_FOLLOW_WORKTREES]: "agentFollowWorktrees",
     [KEY_AGENT_LAUNCH_COMMANDS]: "agentLaunchCommands",
     [KEY_DEFAULT_WORKSPACE_ENV]: "defaultWorkspaceEnv",
     [KEY_SHORTCUTS]: "shortcuts",

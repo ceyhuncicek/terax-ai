@@ -1,6 +1,7 @@
 import { type RefObject, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useManagedAgentsStore } from "@/modules/agents/store/managedAgentsStore";
+import { usePreferencesStore } from "@/modules/settings/preferences";
 import {
   findLeafCwd,
   type TerminalPaneHandle,
@@ -128,9 +129,12 @@ export function useAiLiveBridge(params: Params) {
         useManagedAgentsStore
           .getState()
           .register({ leafId, tabId, sessionId, task: oneLine, cwd });
-        const hooksReady = invoke("agent_enable_hooks", { agent: "claude" }).catch(
-          () => {},
-        );
+        // Read at spawn time: this closure is built once, so a selector here
+        // would pin whatever the preference was when the bridge was published.
+        const hooksReady = invoke("agent_enable_hooks", {
+          agent: "claude",
+          follow: usePreferencesStore.getState().agentFollowWorktrees,
+        }).catch(() => {});
         void (async () => {
           await Promise.all([whenSessionReady(leafId), hooksReady]);
           if (!writeToSession(leafId, "claude\r")) {

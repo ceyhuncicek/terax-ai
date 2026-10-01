@@ -11,11 +11,26 @@ enum Delivery {
     Osc,
 }
 
+// What a given hook does. Notify emits the OSC 777 status marker; Follow asks
+// Terax to follow the agent into a new project root.
+#[derive(Clone, Copy, PartialEq)]
+enum HookKind {
+    Notify,
+    Follow,
+}
+
+struct HookSpec {
+    event: &'static str,
+    // Status marker for Notify; unused for Follow.
+    marker: &'static str,
+    kind: HookKind,
+}
+
 struct AgentSpec {
     agent: &'static str,
     dir: &'static str,
     file: &'static str,
-    events: &'static [(&'static str, &'static str)],
+    events: &'static [HookSpec],
     matcher: bool,
     delivery: Delivery,
 }
@@ -26,9 +41,26 @@ const AGENTS: &[AgentSpec] = &[
         dir: ".claude",
         file: "settings.json",
         events: &[
-            ("UserPromptSubmit", "working"),
-            ("Notification", "attention"),
-            ("Stop", "finished"),
+            HookSpec {
+                event: "UserPromptSubmit",
+                marker: "working",
+                kind: HookKind::Notify,
+            },
+            HookSpec {
+                event: "Notification",
+                marker: "attention",
+                kind: HookKind::Notify,
+            },
+            HookSpec {
+                event: "Stop",
+                marker: "finished",
+                kind: HookKind::Notify,
+            },
+            HookSpec {
+                event: "CwdChanged",
+                marker: "",
+                kind: HookKind::Follow,
+            },
         ],
         matcher: false,
         delivery: Delivery::TerminalSequence,
@@ -38,9 +70,21 @@ const AGENTS: &[AgentSpec] = &[
         dir: ".codex",
         file: "hooks.json",
         events: &[
-            ("UserPromptSubmit", "working"),
-            ("PermissionRequest", "attention"),
-            ("Stop", "finished"),
+            HookSpec {
+                event: "UserPromptSubmit",
+                marker: "working",
+                kind: HookKind::Notify,
+            },
+            HookSpec {
+                event: "PermissionRequest",
+                marker: "attention",
+                kind: HookKind::Notify,
+            },
+            HookSpec {
+                event: "Stop",
+                marker: "finished",
+                kind: HookKind::Notify,
+            },
         ],
         matcher: false,
         delivery: Delivery::Osc,
@@ -50,9 +94,21 @@ const AGENTS: &[AgentSpec] = &[
         dir: ".gemini",
         file: "settings.json",
         events: &[
-            ("BeforeAgent", "working"),
-            ("Notification", "attention"),
-            ("AfterAgent", "finished"),
+            HookSpec {
+                event: "BeforeAgent",
+                marker: "working",
+                kind: HookKind::Notify,
+            },
+            HookSpec {
+                event: "Notification",
+                marker: "attention",
+                kind: HookKind::Notify,
+            },
+            HookSpec {
+                event: "AfterAgent",
+                marker: "finished",
+                kind: HookKind::Notify,
+            },
         ],
         matcher: true,
         delivery: Delivery::Osc,
@@ -89,7 +145,16 @@ export default function (pi: ExtensionAPI) {
 // emitted (legacy /dev/tty Claude, current TerminalSequence, Osc, Windows
 // helper). Used to prune our own groups before reinserting so installs are
 // idempotent and migrate older markers.
-const OWNED_MARKERS: [&str; 3] = ["notify;Terax;", "terax;notify", "__terax_notify"];
+const OWNED_MARKERS: [&str; 4] = [
+    "notify;Terax;",
+    "terax;notify",
+    "__terax_notify",
+    FOLLOW_MARKER,
+];
+
+// Terax-specific spelling so pruning our own groups can never match a hook the
+// user wrote themselves.
+const FOLLOW_MARKER: &str = "--terax-follow-hook";
 
 fn find(agent: &str) -> Result<&'static AgentSpec, String> {
     AGENTS
@@ -98,13 +163,22 @@ fn find(agent: &str) -> Result<&'static AgentSpec, String> {
         .ok_or_else(|| format!("unknown agent {agent}"))
 }
 
-fn hook_command(spec: &AgentSpec, event: &str) -> String {
-    match spec.delivery {
-        Delivery::TerminalSequence => format!(
+fn hook_command(spec: &AgentSpec, hook: &HookSpec) -> String {
+    let event = hook.marker;
+    match (hook.kind, spec.delivery) {
+        (HookKind::Follow, _) => follow_command(),
+        (HookKind::Notify, Delivery::TerminalSequence) => format!(
             r#"[ -n "$TERAX_TERMINAL" ] && printf '{{"terminalSequence":"\\u001b]777;notify;Terax;{event}\\u0007"}}' || true"#
         ),
-        Delivery::Osc => osc_command(spec.agent, event),
+        (HookKind::Notify, Delivery::Osc) => osc_command(spec.agent, event),
     }
+}
+
+// Guarded on TERAX_CLI rather than TERAX_TERMINAL: WSL panes set
+// TERAX_TERMINAL but get no CLI, and an unguarded call would print
+// "command not found" on every directory change.
+fn follow_command() -> String {
+    r#"[ -n "$TERAX_CLI" ] && [ -n "$TERAX_CONTROL_TOKEN" ] && "$TERAX_CLI" cd --terax-follow-hook || true"#.to_string()
 }
 
 // Marker to the tty, then `{}` on stdout: Codex/Gemini require a JSON no-op.
@@ -125,10 +199,12 @@ fn osc_command(agent: &str, event: &str) -> String {
 
 // The stable substring that proves a given (agent, event) hook is installed.
 // Kept in sync with hook_command so status reflects what enable writes.
-fn status_needle(spec: &AgentSpec, event: &str) -> String {
-    match spec.delivery {
-        Delivery::TerminalSequence => format!("notify;Terax;{event}"),
-        Delivery::Osc => {
+fn status_needle(spec: &AgentSpec, hook: &HookSpec) -> String {
+    let event = hook.marker;
+    match (hook.kind, spec.delivery) {
+        (HookKind::Follow, _) => FOLLOW_MARKER.to_string(),
+        (HookKind::Notify, Delivery::TerminalSequence) => format!("notify;Terax;{event}"),
+        (HookKind::Notify, Delivery::Osc) => {
             #[cfg(unix)]
             {
                 format!("notify;Terax;{};{event}", spec.agent)
@@ -163,7 +239,7 @@ fn is_empty_group(group: &Value) -> bool {
         .is_none_or(|hs| hs.is_empty())
 }
 
-fn merge_hooks(mut root: Value, spec: &AgentSpec) -> Value {
+fn merge_hooks(mut root: Value, spec: &AgentSpec, follow: bool) -> Value {
     if !root.is_object() {
         root = json!({});
     }
@@ -174,20 +250,31 @@ fn merge_hooks(mut root: Value, spec: &AgentSpec) -> Value {
     }
     let hooks = hooks.as_object_mut().unwrap();
 
-    for (event, marker) in spec.events {
-        let arr = hooks.entry(*event).or_insert_with(|| json!([]));
+    for hook in spec.events {
+        // A follow hook the user turned off has to be pruned on every enable,
+        // not just skipped, or switching it off would leave the old one behind.
+        let install = follow || hook.kind != HookKind::Follow;
+        if !install && !hooks.contains_key(hook.event) {
+            continue;
+        }
+        let arr = hooks.entry(hook.event).or_insert_with(|| json!([]));
         if !arr.is_array() {
             *arr = json!([]);
         }
         let arr = arr.as_array_mut().unwrap();
         arr.retain(|group| !is_ours(group) && !is_empty_group(group));
-        let mut group = json!({
-            "hooks": [ { "type": "command", "command": hook_command(spec, marker) } ]
-        });
-        if spec.matcher {
-            group["matcher"] = json!("*");
+        if install {
+            let mut group = json!({
+                "hooks": [ { "type": "command", "command": hook_command(spec, hook) } ]
+            });
+            if spec.matcher {
+                group["matcher"] = json!("*");
+            }
+            arr.push(group);
+        } else if arr.is_empty() {
+            // Nothing but ours was here, so leave no empty key behind.
+            hooks.remove(hook.event);
         }
-        arr.push(group);
     }
     root
 }
@@ -267,7 +354,7 @@ fn enable_pi_extension() -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn agent_enable_hooks(agent: String) -> Result<(), String> {
+pub fn agent_enable_hooks(agent: String, follow: bool) -> Result<(), String> {
     if agent == "pi" {
         return enable_pi_extension();
     }
@@ -282,7 +369,7 @@ pub fn agent_enable_hooks(agent: String) -> Result<(), String> {
         Err(e) => return Err(format!("read {}: {e}", path.display())),
     };
 
-    let merged = merge_hooks(existing, spec);
+    let merged = merge_hooks(existing, spec, follow);
     let out = serde_json::to_string_pretty(&merged).map_err(|e| e.to_string())?;
     write_atomic(&path, &out)
 }
@@ -338,9 +425,41 @@ pub fn agent_hooks_status(agent: String) -> bool {
     else {
         return false;
     };
+    notify_hooks_installed(spec, &content)
+}
+
+// Notify hooks only, for two reasons: the bell has to keep meaning
+// "notifications are installed", and counting the follow hook would report
+// "off" for everyone installed before it existed. The follow hook is not
+// invisible as a result; agent_follow_hook_status reports it separately.
+fn notify_hooks_installed(spec: &AgentSpec, content: &str) -> bool {
     spec.events
         .iter()
-        .all(|(_, m)| content.contains(&status_needle(spec, m)))
+        .filter(|h| h.kind == HookKind::Notify)
+        .all(|h| content.contains(&status_needle(spec, h)))
+}
+
+#[tauri::command]
+pub fn agent_follow_hook_status(agent: String) -> bool {
+    let Ok(spec) = find(&agent) else {
+        return false;
+    };
+    let Some(content) = settings_path(spec)
+        .ok()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+    else {
+        return false;
+    };
+    follow_hook_installed(spec, &content)
+}
+
+// `any` rather than `all` so agents without a follow hook answer false instead
+// of a vacuous true, and the frontend can query every agent the same way.
+fn follow_hook_installed(spec: &AgentSpec, content: &str) -> bool {
+    spec.events
+        .iter()
+        .filter(|h| h.kind == HookKind::Follow)
+        .any(|h| content.contains(&status_needle(spec, h)))
 }
 
 #[cfg(test)]
@@ -349,6 +468,14 @@ mod tests {
 
     fn spec(agent: &str) -> &'static AgentSpec {
         find(agent).unwrap()
+    }
+
+    fn hook(agent: &str, event: &str) -> &'static HookSpec {
+        spec(agent)
+            .events
+            .iter()
+            .find(|h| h.event == event)
+            .unwrap()
     }
 
     fn hook_count(root: &Value, event: &str) -> usize {
@@ -364,7 +491,7 @@ mod tests {
 
     #[test]
     fn claude_adds_all_event_hooks_to_empty_config() {
-        let out = merge_hooks(json!({}), spec("claude"));
+        let out = merge_hooks(json!({}), spec("claude"), true);
         assert_eq!(hook_count(&out, "UserPromptSubmit"), 1);
         assert_eq!(hook_count(&out, "Notification"), 1);
         assert_eq!(hook_count(&out, "Stop"), 1);
@@ -376,12 +503,126 @@ mod tests {
     }
 
     #[test]
+    fn claude_installs_a_cwd_changed_follow_hook() {
+        let out = merge_hooks(json!({}), spec("claude"), true);
+        assert_eq!(hook_count(&out, "CwdChanged"), 1);
+        let cmd = command(&out, "CwdChanged", 0);
+        assert!(cmd.contains("cd --terax-follow-hook"));
+        assert!(cmd.contains("$TERAX_CLI"));
+        // WSL panes set TERAX_TERMINAL but have no CLI, so guarding on it would
+        // make every directory change print "command not found".
+        assert!(!cmd.contains("TERAX_TERMINAL"));
+    }
+
+    #[test]
+    fn hooks_status_ignores_the_follow_hook() {
+        let s = spec("claude");
+        let notify_only: String = s
+            .events
+            .iter()
+            .filter(|h| h.kind == HookKind::Notify)
+            .map(|h| hook_command(s, h))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(notify_hooks_installed(s, &notify_only));
+    }
+
+    #[test]
+    fn foreign_hooks_on_a_terax_event_survive() {
+        let input = json!({
+            "hooks": {
+                "Stop": [
+                    { "hooks": [ { "type": "command", "command": "my-typecheck.sh" } ] }
+                ]
+            }
+        });
+        let out = merge_hooks(input, spec("claude"), true);
+        assert_eq!(hook_count(&out, "Stop"), 2);
+        assert_eq!(command(&out, "Stop", 0), "my-typecheck.sh");
+        assert!(command(&out, "Stop", 1).contains("notify;Terax;finished"));
+    }
+
+    #[test]
+    fn disabling_follow_removes_an_installed_follow_hook() {
+        let s = spec("claude");
+        let installed = merge_hooks(json!({}), s, true);
+        assert_eq!(hook_count(&installed, "CwdChanged"), 1);
+
+        let out = merge_hooks(installed, s, false);
+        assert_eq!(hook_count(&out, "CwdChanged"), 0);
+        assert!(out["hooks"].get("CwdChanged").is_none());
+        for event in ["UserPromptSubmit", "Notification", "Stop"] {
+            assert_eq!(hook_count(&out, event), 1, "{event}");
+        }
+        assert!(command(&out, "Stop", 0).contains("notify;Terax;finished"));
+    }
+
+    #[test]
+    fn disabling_follow_on_a_clean_config_installs_only_notify_hooks() {
+        let out = merge_hooks(json!({}), spec("claude"), false);
+        assert!(out["hooks"].get("CwdChanged").is_none());
+        for event in ["UserPromptSubmit", "Notification", "Stop"] {
+            assert_eq!(hook_count(&out, event), 1, "{event}");
+        }
+    }
+
+    #[test]
+    fn toggling_follow_converges_each_time() {
+        let s = spec("claude");
+        let on = merge_hooks(json!({}), s, true);
+        let off = merge_hooks(on.clone(), s, false);
+        let on_again = merge_hooks(off.clone(), s, true);
+
+        assert_eq!(on, on_again);
+        assert_eq!(off, merge_hooks(on_again.clone(), s, false));
+        for h in s.events {
+            assert_eq!(hook_count(&on_again, h.event), 1, "{}", h.event);
+        }
+    }
+
+    #[test]
+    fn disabling_follow_keeps_a_users_own_cwd_changed_hook() {
+        let input = json!({
+            "hooks": {
+                "CwdChanged": [
+                    { "hooks": [ { "type": "command", "command": "my-cd-notify.sh" } ] }
+                ]
+            }
+        });
+        let out = merge_hooks(input, spec("claude"), false);
+        assert_eq!(hook_count(&out, "CwdChanged"), 1);
+        assert_eq!(command(&out, "CwdChanged", 0), "my-cd-notify.sh");
+    }
+
+    #[test]
+    fn follow_hook_status_tracks_the_follow_command_only() {
+        let s = spec("claude");
+        let notify_only: String = s
+            .events
+            .iter()
+            .filter(|h| h.kind == HookKind::Notify)
+            .map(|h| hook_command(s, h))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(!follow_hook_installed(s, &notify_only));
+        assert!(follow_hook_installed(
+            s,
+            &format!("{notify_only}\n{}", follow_command())
+        ));
+        // Codex has no follow hook, so it answers false instead of a vacuous true.
+        assert!(!follow_hook_installed(spec("codex"), &follow_command()));
+    }
+
+    #[test]
     fn is_idempotent_per_agent() {
         for agent in ["claude", "codex", "gemini"] {
             let s = spec(agent);
-            let once = merge_hooks(json!({}), s);
-            let twice = merge_hooks(once.clone(), s);
+            let once = merge_hooks(json!({}), s, true);
+            let twice = merge_hooks(once.clone(), s, true);
             assert_eq!(once, twice, "{agent} not idempotent");
+            for h in s.events {
+                assert_eq!(hook_count(&twice, h.event), 1, "{agent} {}", h.event);
+            }
         }
     }
 
@@ -397,7 +638,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn codex_emits_four_field_dev_tty_marker() {
-        let out = merge_hooks(json!({}), spec("codex"));
+        let out = merge_hooks(json!({}), spec("codex"), true);
         assert_eq!(hook_count(&out, "UserPromptSubmit"), 1);
         assert_eq!(hook_count(&out, "PermissionRequest"), 1);
         assert_eq!(hook_count(&out, "Stop"), 1);
@@ -412,7 +653,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn gemini_uses_matcher_and_named_marker() {
-        let out = merge_hooks(json!({}), spec("gemini"));
+        let out = merge_hooks(json!({}), spec("gemini"), true);
         assert_eq!(out["hooks"]["BeforeAgent"][0]["matcher"], "*");
         assert!(command(&out, "AfterAgent", 0).contains("notify;Terax;gemini;finished"));
         assert!(command(&out, "Notification", 0).contains("notify;Terax;gemini;attention"));
@@ -492,7 +733,7 @@ mod tests {
                 ]
             }
         });
-        let out = merge_hooks(legacy, spec("claude"));
+        let out = merge_hooks(legacy, spec("claude"), true);
         assert_eq!(hook_count(&out, "Notification"), 1);
         assert!(command(&out, "Notification", 0).contains("terminalSequence"));
         assert!(!command(&out, "Notification", 0).contains("/dev/tty"));
@@ -508,7 +749,7 @@ mod tests {
                 ]
             }
         });
-        let out = merge_hooks(input, spec("claude"));
+        let out = merge_hooks(input, spec("claude"), true);
         assert_eq!(out["permissions"]["allow"][0], "Bash");
         assert_eq!(hook_count(&out, "Notification"), 2);
         assert_eq!(command(&out, "Notification", 0), "say hi");
@@ -516,7 +757,7 @@ mod tests {
 
     #[test]
     fn replaces_non_object_root() {
-        let out = merge_hooks(json!("garbage"), spec("codex"));
+        let out = merge_hooks(json!("garbage"), spec("codex"), true);
         assert_eq!(hook_count(&out, "Stop"), 1);
     }
 
@@ -526,11 +767,11 @@ mod tests {
             "hooks": {
                 "Notification": [
                     { "hooks": [] },
-                    { "hooks": [ { "type": "command", "command": hook_command(spec("claude"), "attention") } ] }
+                    { "hooks": [ { "type": "command", "command": hook_command(spec("claude"), hook("claude", "Notification")) } ] }
                 ]
             }
         });
-        let out = merge_hooks(input, spec("claude"));
+        let out = merge_hooks(input, spec("claude"), true);
         assert_eq!(hook_count(&out, "Notification"), 1);
         assert!(command(&out, "Notification", 0).contains("notify;Terax;attention"));
     }

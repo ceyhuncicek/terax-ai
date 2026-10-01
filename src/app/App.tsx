@@ -618,6 +618,7 @@ export default function App() {
       const hooksReady = launcher.supportsHooks
         ? invoke("agent_enable_hooks", {
             agent: request.agent,
+            follow: usePreferencesStore.getState().agentFollowWorktrees,
           }).catch((error) => {
             console.warn(
               `[terax] could not enable ${request.agent} notifications:`,

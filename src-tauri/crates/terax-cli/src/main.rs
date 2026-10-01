@@ -1,8 +1,8 @@
 use std::env;
 use std::ffi::OsString;
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufRead, BufReader, IsTerminal, Read, Write};
 use std::net::{SocketAddr, TcpStream};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -20,12 +20,17 @@ const EXIT_USAGE: u8 = 2;
 const EXIT_UNAVAILABLE: u8 = 3;
 const EXIT_PROTOCOL: u8 = 4;
 const EXIT_REQUEST: u8 = 5;
+// A hook payload is a few hundred bytes, so cap the read rather than let a wedged
+// or hostile producer make the CLI buffer without end.
+const HOOK_INPUT_LIMIT: u64 = 1024 * 1024;
+const HOOK_FLAG: &str = "--terax-follow-hook";
 static REQUEST_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Debug, PartialEq)]
 enum Action {
     Help,
     Version,
+    Noop,
     Request { method: &'static str, params: Value },
 }
 
@@ -53,8 +58,13 @@ impl CliError {
 }
 
 fn main() -> ExitCode {
-    match run(env::args_os().skip(1).collect()) {
+    let args: Vec<OsString> = env::args_os().skip(1).collect();
+    // A hook result parser reads stdout, so a hook invocation stays silent and
+    // succeeds whatever happened; a missing app is not the agent's problem.
+    let silent = hook_mode(&args);
+    match run(args) {
         Ok(()) => ExitCode::SUCCESS,
+        Err(_) if silent => ExitCode::SUCCESS,
         Err(error) => {
             let mut display_args: Vec<OsString> = env::args_os().skip(1).collect();
             let json = extract_json_flag(&mut display_args);
@@ -75,6 +85,7 @@ fn main() -> ExitCode {
 }
 
 fn run(args: Vec<OsString>) -> Result<(), CliError> {
+    let silent = hook_mode(&args);
     let config = parse_args(args)?;
     match config.action {
         Action::Help => {
@@ -85,6 +96,7 @@ fn run(args: Vec<OsString>) -> Result<(), CliError> {
             println!("terax {}", env!("CARGO_PKG_VERSION"));
             Ok(())
         }
+        Action::Noop => Ok(()),
         Action::Request { method, params } => {
             let endpoint = load_endpoint()?;
             let caller = env::var("TERAX_PANE_ID")
@@ -109,7 +121,9 @@ fn run(args: Vec<OsString>) -> Result<(), CliError> {
                 return Err(CliError::new(error.code, error.message, EXIT_REQUEST));
             }
             let result = response.result.unwrap_or(Value::Null);
-            print_result(method, result, config.json);
+            if !silent {
+                print_result(method, result, config.json);
+            }
             Ok(())
         }
     }
@@ -167,6 +181,19 @@ fn extract_json_flag(args: &mut Vec<OsString>) -> bool {
         true
     });
     json
+}
+
+fn hook_mode(args: &[OsString]) -> bool {
+    let mut arguments = args
+        .iter()
+        .take_while(|arg| *arg != "--")
+        .filter(|arg| *arg != "--json");
+    // Only cd answers to a hook, so the flag on any other verb stays a visible usage
+    // error rather than a command that silently does nothing.
+    match arguments.next() {
+        Some(verb) if verb == "cd" => arguments.any(|arg| arg == HOOK_FLAG),
+        _ => false,
+    }
 }
 
 fn no_extra_args(args: Vec<OsString>, action: Action) -> Result<Action, CliError> {
@@ -264,6 +291,7 @@ fn parse_open(args: Vec<OsString>) -> Result<Action, CliError> {
 fn parse_cd(args: Vec<OsString>) -> Result<Action, CliError> {
     let mut path: Option<OsString> = None;
     let mut focus = true;
+    let mut from_hook = false;
     let mut options = true;
     let mut index = 0;
     while index < args.len() {
@@ -271,6 +299,7 @@ fn parse_cd(args: Vec<OsString>) -> Result<Action, CliError> {
         match arg.to_str() {
             Some("--") if options => options = false,
             Some("--no-focus") if options => focus = false,
+            Some(HOOK_FLAG) if options => from_hook = true,
             Some(value) if options && value.starts_with('-') => {
                 return Err(usage_error(format!("unknown cd option '{value}'")));
             }
@@ -279,22 +308,45 @@ fn parse_cd(args: Vec<OsString>) -> Result<Action, CliError> {
         }
         index += 1;
     }
-
-    let path = path.ok_or_else(|| usage_error("cd requires a directory"))?;
-    let canonical = std::fs::canonicalize(PathBuf::from(path)).map_err(|error| {
-        CliError::new(
-            "path_not_found",
-            format!("cannot resolve directory: {error}"),
-            EXIT_USAGE,
-        )
-    })?;
-    if !canonical.is_dir() {
-        return Err(CliError::new(
-            "not_a_directory",
-            format!("path is not a directory: {}", canonical.display()),
-            EXIT_USAGE,
+    if from_hook && path.is_some() {
+        return Err(usage_error(
+            "cd takes its directory from the hook payload or the command line, not both",
         ));
     }
+
+    let canonical = if from_hook {
+        // Anything the payload cannot be trusted to name is not ours to act on, and
+        // a hook has no way to report that, so stay silent instead of erroring.
+        let Some(target) = read_hook_cwd() else {
+            return Ok(Action::Noop);
+        };
+        let Ok(canonical) = std::fs::canonicalize(PathBuf::from(target)) else {
+            return Ok(Action::Noop);
+        };
+        // The agent walks around inside one checkout constantly; only a move to
+        // another repo or worktree is worth moving the view for.
+        if !is_project_root(&canonical) {
+            return Ok(Action::Noop);
+        }
+        canonical
+    } else {
+        let path = path.ok_or_else(|| usage_error("cd requires a directory"))?;
+        let canonical = std::fs::canonicalize(PathBuf::from(path)).map_err(|error| {
+            CliError::new(
+                "path_not_found",
+                format!("cannot resolve directory: {error}"),
+                EXIT_USAGE,
+            )
+        })?;
+        if !canonical.is_dir() {
+            return Err(CliError::new(
+                "not_a_directory",
+                format!("path is not a directory: {}", canonical.display()),
+                EXIT_USAGE,
+            ));
+        }
+        canonical
+    };
     let path = canonical.into_os_string().into_string().map_err(|_| {
         CliError::new(
             "non_utf8_path",
@@ -313,6 +365,43 @@ fn parse_cd(args: Vec<OsString>) -> Result<Action, CliError> {
         method: METHOD_CD,
         params,
     })
+}
+
+fn read_hook_cwd() -> Option<String> {
+    let stdin = std::io::stdin();
+    // A hook writes the payload and closes the pipe, but a terminal never closes, so
+    // reading one would hang the shell with no output and no prompt back.
+    if stdin.is_terminal() {
+        return None;
+    }
+    let mut input = String::new();
+    stdin
+        .lock()
+        .take(HOOK_INPUT_LIMIT)
+        .read_to_string(&mut input)
+        .ok()?;
+    hook_cwd_from_json(&input)
+}
+
+fn hook_cwd_from_json(input: &str) -> Option<String> {
+    let payload: Value = serde_json::from_str(input).ok()?;
+    if payload.get("hook_event_name").and_then(Value::as_str)? != "CwdChanged" {
+        return None;
+    }
+    let new_cwd = payload.get("new_cwd").and_then(Value::as_str)?;
+    if new_cwd.is_empty() {
+        return None;
+    }
+    if payload.get("old_cwd").and_then(Value::as_str) == Some(new_cwd) {
+        return None;
+    }
+    Some(new_cwd.to_string())
+}
+
+fn is_project_root(dir: &Path) -> bool {
+    // A linked worktree's .git is a file, not a directory, so test for presence only.
+    // metadata follows symlinks, which rejects a dangling .git link.
+    std::fs::metadata(dir.join(".git")).is_ok()
 }
 
 fn usage_error(message: impl Into<String>) -> CliError {
@@ -733,6 +822,122 @@ mod tests {
     }
 
     #[test]
+    fn cd_rejects_from_hook_with_a_path() {
+        let dir = tempfile::tempdir().expect("temp directory");
+        let error = parse_args(vec![
+            "cd".into(),
+            "--terax-follow-hook".into(),
+            dir.path().as_os_str().to_owned(),
+        ])
+        .expect_err("reject a path alongside the hook flag");
+        assert_eq!(error.code, "usage");
+        assert_eq!(error.exit, EXIT_USAGE);
+    }
+
+    #[test]
+    fn hook_mode_belongs_to_the_cd_verb_alone() {
+        assert!(hook_mode(&args(&["cd", "--terax-follow-hook"])));
+        assert!(hook_mode(&args(&["cd", "--json", "--terax-follow-hook"])));
+        assert!(!hook_mode(&args(&["cd"])));
+        assert!(!hook_mode(&args(&["cd", "--", "--terax-follow-hook"])));
+        assert!(!hook_mode(&args(&["--terax-follow-hook"])));
+    }
+
+    #[test]
+    fn the_hook_flag_outside_cd_stays_a_visible_usage_error() {
+        let values = args(&["open", "--terax-follow-hook", "/etc/hosts"]);
+        assert!(!hook_mode(&values));
+        let error = parse_args(values).expect_err("reject the hook flag on open");
+        assert_eq!(error.code, "usage");
+        assert_eq!(error.exit, EXIT_USAGE);
+    }
+
+    #[test]
+    fn hook_payload_reports_the_new_directory() {
+        let payload = r#"{"session_id":"s1","transcript_path":"/t","cwd":"/b",
+            "hook_event_name":"CwdChanged","old_cwd":"/a","new_cwd":"/b"}"#;
+        assert_eq!(hook_cwd_from_json(payload), Some("/b".to_string()));
+    }
+
+    #[test]
+    fn hook_payload_ignores_a_directory_that_did_not_change() {
+        let payload = r#"{"hook_event_name":"CwdChanged","old_cwd":"/a","new_cwd":"/a"}"#;
+        assert_eq!(hook_cwd_from_json(payload), None);
+    }
+
+    #[test]
+    fn hook_payload_ignores_other_events() {
+        let payload = r#"{"hook_event_name":"Stop","old_cwd":"/a","new_cwd":"/b"}"#;
+        assert_eq!(hook_cwd_from_json(payload), None);
+    }
+
+    #[test]
+    fn hook_payload_ignores_anything_unusable() {
+        assert_eq!(hook_cwd_from_json("{"), None);
+        assert_eq!(
+            hook_cwd_from_json(r#"{"hook_event_name":"CwdChanged","old_cwd":"/a"}"#),
+            None
+        );
+        assert_eq!(
+            hook_cwd_from_json(r#"{"hook_event_name":"CwdChanged","new_cwd":""}"#),
+            None
+        );
+        assert_eq!(
+            hook_cwd_from_json(r#"{"hook_event_name":"CwdChanged","new_cwd":42}"#),
+            None
+        );
+    }
+
+    #[test]
+    fn project_root_detection_needs_a_git_entry() {
+        let dir = tempfile::tempdir().expect("temp directory");
+        assert!(!is_project_root(dir.path()));
+        std::fs::create_dir(dir.path().join(".git")).expect("git directory");
+        assert!(is_project_root(dir.path()));
+    }
+
+    #[test]
+    fn project_root_detection_accepts_a_linked_worktree() {
+        let dir = tempfile::tempdir().expect("temp directory");
+        let main = dir.path().join("main");
+        std::fs::create_dir(&main).expect("main checkout");
+        if !git(&main, &["init", "-q"]) {
+            // No usable git here, so there is no worktree to look at.
+            return;
+        }
+        std::fs::write(main.join("README"), "terax").expect("seed file");
+        assert!(git(&main, &["add", "README"]), "stage the seed file");
+        assert!(git(&main, &["commit", "-qm", "seed"]), "commit the seed file");
+        let linked = dir.path().join("linked");
+        let linked_arg = linked.to_str().expect("utf8 worktree path");
+        assert!(
+            git(&main, &["worktree", "add", "-q", linked_arg, "-b", "side"]),
+            "add the linked worktree"
+        );
+        assert!(std::fs::symlink_metadata(linked.join(".git"))
+            .expect("worktree git entry")
+            .is_file());
+        assert!(is_project_root(&linked));
+    }
+
+    fn git(dir: &Path, arguments: &[&str]) -> bool {
+        // Keep the repo out of the developer's own git config and identity.
+        std::process::Command::new("git")
+            .current_dir(dir)
+            .args(arguments)
+            .env("GIT_CONFIG_GLOBAL", dir.join("absent-gitconfig"))
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_AUTHOR_NAME", "terax")
+            .env("GIT_AUTHOR_EMAIL", "terax@example.invalid")
+            .env("GIT_COMMITTER_NAME", "terax")
+            .env("GIT_COMMITTER_EMAIL", "terax@example.invalid")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success())
+    }
+
+    #[test]
     fn help_is_the_default() {
         assert_eq!(
             parse_args(Vec::new()).expect("parse default").action,
@@ -802,8 +1007,7 @@ mod tests {
 
     #[test]
     fn loopback_parsing_rejects_hostnames_and_remote_hosts() {
-        let error =
-            parse_loopback_address("localhost:4312").expect_err("reject hostname");
+        let error = parse_loopback_address("localhost:4312").expect_err("reject hostname");
         assert_eq!(error.code, "invalid_endpoint");
         let error = parse_loopback_address("127.0.0.1").expect_err("reject missing port");
         assert_eq!(error.code, "invalid_endpoint");
