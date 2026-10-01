@@ -18,6 +18,7 @@ If a guide conflicts with `TERAX.md`, `TERAX.md` wins.
 - [Terminal renderer pool](architecture/terminal-renderer-pool.md) - persistent Ghostty models, bounded presentation leases, and renderer recovery.
 - [Ghostty WebGL renderer](architecture/ghostty-webgl-renderer.md) - adapted xterm.js renderer, Ghostty model boundary, renderer pooling, and rollout gates.
 - [CLI control plane](architecture/cli-control.md) - bundled CLI, authenticated local protocol, caller targeting, packaging, and current platform limits.
+- [Worktree visibility, 2026-09-30](architecture/worktree-visibility-2026-09-30.md) - why the explorer and source control panel do not follow an agent into a git worktree, and the options for changing that.
 
 ## Terminal migration and validation
 
