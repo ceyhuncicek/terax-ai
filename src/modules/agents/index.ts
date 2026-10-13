@@ -13,4 +13,5 @@ export {
   normalizeAgentLaunchCommands,
   validateAgentLaunchCommand,
 } from "./lib/launcher";
+export { useClaudeSessions } from "./lib/useClaudeSessions";
 export { nextAttentionTarget } from "./store/agentStore";

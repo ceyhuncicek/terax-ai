@@ -1,4 +1,5 @@
 import {
+  type ClaudeSessionLink,
   isLeaf,
   type PaneNode,
   type SplitDir,
@@ -12,7 +13,12 @@ import type {
 } from "@/modules/tabs/lib/useTabs";
 
 export type SerializedNode =
-  | { kind: "leaf"; cwd?: string; active?: boolean }
+  | {
+      kind: "leaf";
+      cwd?: string;
+      active?: boolean;
+      claude?: ClaudeSessionLink;
+    }
   | { kind: "split"; dir: SplitDir; children: SerializedNode[] };
 
 export type SerializedTab =
@@ -45,6 +51,7 @@ function serializeNode(node: PaneNode, activeLeafId: number): SerializedNode {
       kind: "leaf",
       ...(node.cwd !== undefined && { cwd: node.cwd }),
       ...(node.id === activeLeafId && { active: true }),
+      ...(node.claude && { claude: node.claude }),
     };
   }
   return {
@@ -67,7 +74,7 @@ export function isSerializableTab(tab: Tab): boolean {
   }
 }
 
-function serializeTab(tab: Tab): SerializedTab | null {
+export function serializeTab(tab: Tab): SerializedTab | null {
   if (!isSerializableTab(tab)) return null;
   switch (tab.kind) {
     case "terminal":
@@ -97,6 +104,27 @@ export function serializeTabs(tabs: Tab[]): SerializedTab[] {
   return out;
 }
 
+const SESSION_ID = /^[A-Za-z0-9-]{1,128}$/;
+const COMMAND_MAX = 512;
+
+// The store file is user-writable and the link is typed into a shell on resume,
+// so anything that does not look exactly like what we wrote is dropped.
+function hydrateClaudeLink(value: unknown): ClaudeSessionLink | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  const { sessionId, command } = value as Record<string, unknown>;
+  if (typeof sessionId !== "string" || !SESSION_ID.test(sessionId)) {
+    return undefined;
+  }
+  if (
+    typeof command === "string" &&
+    command.length > 0 &&
+    command.length <= COMMAND_MAX
+  ) {
+    return { sessionId, command };
+  }
+  return { sessionId };
+}
+
 type HydratedTree = {
   tree: PaneNode;
   activeLeafId: number;
@@ -111,10 +139,12 @@ function hydrateNode(
   if (node.kind === "leaf") {
     const id = allocId();
     if (node.active && acc.activeLeafId === null) acc.activeLeafId = id;
+    const claude = hydrateClaudeLink(node.claude);
     return {
       kind: "leaf",
       id,
       ...(node.cwd !== undefined && { cwd: node.cwd }),
+      ...(claude && { claude, resumeClaude: true }),
     };
   }
   const children = node.children.map((c) => hydrateNode(c, allocId, acc));
@@ -141,7 +171,7 @@ function collectLeaves(node: PaneNode): Array<{ id: number; cwd?: string }> {
   return node.children.flatMap(collectLeaves);
 }
 
-function hydrateTab(
+function hydrateSerializedTab(
   s: SerializedTab,
   spaceId: string,
   allocId: () => number,
@@ -217,6 +247,18 @@ export function freshTerminalTab(
   };
 }
 
+export function hydrateTab(
+  s: SerializedTab,
+  spaceId: string,
+  allocId: () => number,
+): Tab | null {
+  try {
+    return hydrateSerializedTab(s, spaceId, allocId);
+  } catch {
+    return null;
+  }
+}
+
 export function hydrateTabs(
   serialized: SerializedTab[],
   spaceId: string,
@@ -225,12 +267,9 @@ export function hydrateTabs(
   if (!Array.isArray(serialized)) return [];
   const out: Tab[] = [];
   for (const s of serialized) {
-    try {
-      const tab = hydrateTab(s, spaceId, allocId);
-      if (tab) out.push(tab);
-    } catch {
-      // Skip corrupted entries rather than failing the whole restore.
-    }
+    // Corrupted entries are skipped rather than failing the whole restore.
+    const tab = hydrateTab(s, spaceId, allocId);
+    if (tab) out.push(tab);
   }
   return out;
 }

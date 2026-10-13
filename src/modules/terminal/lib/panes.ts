@@ -10,8 +10,19 @@ export type PaneBounds = {
   bottom: number;
 };
 
+/** The Claude Code session running in a pane and the command that started it. */
+export type ClaudeSessionLink = { sessionId: string; command?: string };
+
 export type PaneNode =
-  | { kind: "leaf"; id: PaneId; slotId?: PaneId; cwd?: string }
+  | {
+      kind: "leaf";
+      id: PaneId;
+      slotId?: PaneId;
+      cwd?: string;
+      claude?: ClaudeSessionLink;
+      /** Restored with a link and not yet resumed. Never persisted. */
+      resumeClaude?: boolean;
+    }
   | {
       kind: "split";
       id: PaneId;
@@ -60,6 +71,49 @@ export function setLeafCwd(
     return u;
   });
   return changed ? { ...n, children: next } : n;
+}
+
+function updateLeaf(
+  n: PaneNode,
+  id: PaneId,
+  update: (leaf: Extract<PaneNode, { kind: "leaf" }>) => PaneNode,
+): PaneNode {
+  if (isLeaf(n)) return n.id === id ? update(n) : n;
+  let changed = false;
+  const next = n.children.map((c) => {
+    const u = updateLeaf(c, id, update);
+    if (u !== c) changed = true;
+    return u;
+  });
+  return changed ? { ...n, children: next } : n;
+}
+
+export function setLeafClaude(
+  n: PaneNode,
+  id: PaneId,
+  link: ClaudeSessionLink | undefined,
+): PaneNode {
+  return updateLeaf(n, id, (leaf) => {
+    if (
+      leaf.claude?.sessionId === link?.sessionId &&
+      leaf.claude?.command === link?.command
+    ) {
+      return leaf;
+    }
+    const next = { ...leaf, claude: link };
+    delete next.resumeClaude;
+    if (!link) delete next.claude;
+    return next;
+  });
+}
+
+export function clearLeafResumeClaude(n: PaneNode, id: PaneId): PaneNode {
+  return updateLeaf(n, id, (leaf) => {
+    if (!leaf.resumeClaude) return leaf;
+    const next = { ...leaf };
+    delete next.resumeClaude;
+    return next;
+  });
 }
 
 /**
@@ -231,7 +285,7 @@ function directionalTarget(
   return candidates[0]?.id ?? null;
 }
 
-function findLeaf(node: PaneNode, id: PaneId): Extract<PaneNode, { kind: "leaf" }> | null {
+export function findLeaf(node: PaneNode, id: PaneId): Extract<PaneNode, { kind: "leaf" }> | null {
   if (isLeaf(node)) return node.id === id ? node : null;
   for (const child of node.children) {
     const found = findLeaf(child, id);

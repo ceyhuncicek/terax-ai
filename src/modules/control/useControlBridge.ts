@@ -37,6 +37,11 @@ type CdRequest = {
   focus: boolean;
 };
 
+type AgentSessionRequest = {
+  sessionId: string;
+  source?: string;
+};
+
 type UseControlBridgeOptions = {
   ready: boolean;
   tabsRef: RefObject<Tab[]>;
@@ -46,6 +51,8 @@ type UseControlBridgeOptions = {
   onCd: (
     request: CdRequest & { spaceId: string; foreground: boolean },
   ) => number | null;
+  /** False when the pane is gone. */
+  onAgentSession: (paneId: number, request: AgentSessionRequest) => boolean;
 };
 
 class RequestError extends Error {
@@ -105,6 +112,33 @@ export function parseCdRequest(params: unknown): CdRequest {
   };
 }
 
+// Rust validated these already; this guards the shape the UI relies on.
+export function parseAgentSessionRequest(params: unknown): AgentSessionRequest {
+  if (typeof params !== "object" || params === null) {
+    throw new RequestError(
+      "invalid_params",
+      "agent-session parameters are required",
+    );
+  }
+  const value = params as Record<string, unknown>;
+  if (value.agent !== "claude") {
+    throw new RequestError("unsupported_agent", "only claude is supported");
+  }
+  if (
+    typeof value.session_id !== "string" ||
+    !/^[A-Za-z0-9-]{1,128}$/.test(value.session_id)
+  ) {
+    throw new RequestError("invalid_params", "session id is invalid");
+  }
+  if (value.source !== undefined && typeof value.source !== "string") {
+    throw new RequestError("invalid_params", "source must be a string");
+  }
+  return {
+    sessionId: value.session_id,
+    ...(value.source !== undefined && { source: value.source as string }),
+  };
+}
+
 const setFrontendReady = createReadinessQueue((ready) =>
   invoke("control_frontend_ready", { ready }),
 );
@@ -129,6 +163,7 @@ export function useControlBridge({
   activeSpaceIdRef,
   onOpen,
   onCd,
+  onAgentSession,
 }: UseControlBridgeOptions): void {
   useEffect(() => {
     if (!ready) return;
@@ -210,6 +245,21 @@ export function useControlBridge({
           });
           return;
         }
+        if (request.method === "agent-session") {
+          const session = parseAgentSessionRequest(request.params);
+          const paneId = request.caller.pane_id;
+          if (paneId == null || !onAgentSession(paneId, session)) {
+            throw new RequestError(
+              "pane_not_found",
+              "the calling pane is no longer open",
+            );
+          }
+          await respond(request.id, {
+            ok: true,
+            result: { pane_id: paneId, session_id: session.sessionId },
+          });
+          return;
+        }
         throw new RequestError(
           "unknown_method",
           `unsupported frontend method '${request.method}'`,
@@ -249,5 +299,13 @@ export function useControlBridge({
         console.error("[terax] control bridge cleanup failed:", error);
       });
     };
-  }, [ready, tabsRef, activeTabIdRef, activeSpaceIdRef, onOpen, onCd]);
+  }, [
+    ready,
+    tabsRef,
+    activeTabIdRef,
+    activeSpaceIdRef,
+    onOpen,
+    onCd,
+    onAgentSession,
+  ]);
 }

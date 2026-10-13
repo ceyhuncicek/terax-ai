@@ -158,3 +158,103 @@ describe("hydrateTabs", () => {
     ]);
   });
 });
+
+describe("claude session links", () => {
+  const SESSION = "2b1f9a4e-6c1d-4f7e-9a3b-0c5d8e7f1a2b";
+
+  it("round-trips a link onto the new leaf id and marks it for resume", () => {
+    const tree: PaneNode = {
+      kind: "split",
+      id: 10,
+      dir: "row",
+      children: [
+        {
+          kind: "leaf",
+          id: 11,
+          cwd: "/a",
+          claude: { sessionId: SESSION, command: "claude --model opus" },
+        },
+        { kind: "leaf", id: 12, cwd: "/b" },
+      ],
+    };
+    const serialized = serializeTabs([
+      term({ paneTree: tree, activeLeafId: 12 }),
+    ]);
+    const [restored] = hydrateTabs(serialized, "s1", counter());
+    if (restored.kind !== "terminal" || restored.paneTree.kind !== "split") {
+      throw new Error("expected a restored split");
+    }
+    const [first, second] = restored.paneTree.children;
+    expect(first).toMatchObject({
+      kind: "leaf",
+      cwd: "/a",
+      claude: { sessionId: SESSION, command: "claude --model opus" },
+      resumeClaude: true,
+    });
+    expect(first.id).not.toBe(11);
+    expect(second).not.toHaveProperty("claude");
+    expect(second).not.toHaveProperty("resumeClaude");
+  });
+
+  it("never persists the transient resume flag", () => {
+    const [out] = serializeTabs([
+      term({
+        paneTree: {
+          kind: "leaf",
+          id: 2,
+          cwd: "/a",
+          claude: { sessionId: SESSION },
+          resumeClaude: true,
+        },
+      }),
+    ]);
+    expect(out).toEqual({
+      kind: "terminal",
+      tree: {
+        kind: "leaf",
+        cwd: "/a",
+        active: true,
+        claude: { sessionId: SESSION },
+      },
+    });
+  });
+
+  it("drops links whose id could carry shell syntax", () => {
+    const leaf = (claude: unknown): SerializedTab => ({
+      kind: "terminal",
+      tree: { kind: "leaf", cwd: "/a", claude } as never,
+    });
+    for (const claude of [
+      { sessionId: "abc; rm -rf ~" },
+      { sessionId: "$(id)" },
+      { sessionId: "" },
+      { sessionId: 42 },
+      "abc",
+      null,
+    ]) {
+      const [tab] = hydrateTabs([leaf(claude)], "s1", counter());
+      if (tab.kind !== "terminal") throw new Error("expected a terminal");
+      expect(tab.paneTree).not.toHaveProperty("claude");
+      expect(tab.paneTree).not.toHaveProperty("resumeClaude");
+    }
+  });
+
+  it("keeps the id but drops a malformed command", () => {
+    const [tab] = hydrateTabs(
+      [
+        {
+          kind: "terminal",
+          tree: {
+            kind: "leaf",
+            claude: { sessionId: SESSION, command: 7 as unknown as string },
+          },
+        },
+      ],
+      "s1",
+      counter(),
+    );
+    if (tab.kind !== "terminal") throw new Error("expected a terminal");
+    expect(tab.paneTree).toMatchObject({ claude: { sessionId: SESSION } });
+    expect(tab.paneTree).not.toHaveProperty("claude.command");
+  });
+});

@@ -14,6 +14,8 @@ terax capabilities [--json]
 terax identify [--json]
 ```
 
+Two verbs exist only for the Claude Code hooks Terax installs and stay silent on stdout with exit status 0 whatever happens: `terax cd --terax-follow-hook` (`CwdChanged`) and `terax agent-session --terax-session-hook` (`SessionStart`). The latter needs `TERAX_PANE_ID`, takes the session id from the hook payload, and accepts only `[A-Za-z0-9-]` ids of at most 128 bytes because the id is later typed into a shell to resume the session. Rust rejects `agent-session` without a caller pane rather than falling back to the active one.
+
 The app must already be running. A command launched inside a Terax pane targets that pane's space, even if another space or tab has UI focus. An external client without pane context falls back to the active UI context.
 
 ## Components
@@ -63,7 +65,7 @@ The release profile uses one codegen unit, fat LTO, size optimization, abort-on-
 - WSL panes do not receive the control credentials or CLI launcher yet. Windows path translation and WSL networking must be implemented and tested together.
 - Terax does not yet install a global command for external Terminal.app, PowerShell, or other terminals. The bundled helper and cache descriptor already support that future installer step.
 - The CLI does not launch a stopped Terax app yet.
-- Split, tab, agent, screen-read, and input commands are not part of protocol version 1 yet.
+- Split, tab, screen-read, and input commands are not part of protocol version 1 yet; the only agent command is the hook-driven `agent-session`.
 
 These limits are explicit so unsupported paths fail as unavailable instead of silently targeting the wrong pane or exposing a credential for a command that cannot connect.
 

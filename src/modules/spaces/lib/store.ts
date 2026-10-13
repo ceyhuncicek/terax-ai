@@ -55,8 +55,14 @@ export async function saveActiveId(id: string | null): Promise<void> {
   await store.set(KEY_ACTIVE, id);
 }
 
-export async function saveState(id: string, state: SpaceState): Promise<void> {
+export async function saveState(
+  id: string,
+  state: SpaceState,
+  durable = false,
+): Promise<void> {
   await store.set(stateKey(id), state);
+  // autoSave batches writes; durable state goes to disk without that window.
+  if (durable) await store.save();
 }
 
 export async function deleteSpaceData(id: string): Promise<void> {

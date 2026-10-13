@@ -9,9 +9,10 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::{json, Value};
 use terax_control_protocol::{
-    CallerContext, CdParams, ControlDescriptor, ControlRequest, ControlResponse, OpenParams,
-    MAX_MESSAGE_BYTES, METHOD_CAPABILITIES, METHOD_CD, METHOD_IDENTIFY, METHOD_OPEN, METHOD_PING,
-    PROTOCOL_VERSION, SERVER_RESPONSE_ID,
+    valid_agent_session_id, valid_agent_session_source, AgentSessionParams, CallerContext,
+    CdParams, ControlDescriptor, ControlRequest, ControlResponse, OpenParams, MAX_MESSAGE_BYTES,
+    METHOD_AGENT_SESSION, METHOD_CAPABILITIES, METHOD_CD, METHOD_IDENTIFY, METHOD_OPEN,
+    METHOD_PING, PROTOCOL_VERSION, SERVER_RESPONSE_ID,
 };
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
@@ -24,6 +25,7 @@ const EXIT_REQUEST: u8 = 5;
 // or hostile producer make the CLI buffer without end.
 const HOOK_INPUT_LIMIT: u64 = 1024 * 1024;
 const HOOK_FLAG: &str = "--terax-follow-hook";
+const SESSION_HOOK_FLAG: &str = "--terax-session-hook";
 static REQUEST_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Debug, PartialEq)]
@@ -148,6 +150,7 @@ fn parse_args(mut args: Vec<OsString>) -> Result<Config, CliError> {
         Some("identify") => request_without_params(args, METHOD_IDENTIFY)?,
         Some("open") => parse_open(args)?,
         Some("cd") => parse_cd(args)?,
+        Some("agent-session") => parse_agent_session(args)?,
         Some("--") => {
             args.insert(0, command);
             parse_open(args)?
@@ -188,10 +191,11 @@ fn hook_mode(args: &[OsString]) -> bool {
         .iter()
         .take_while(|arg| *arg != "--")
         .filter(|arg| *arg != "--json");
-    // Only cd answers to a hook, so the flag on any other verb stays a visible usage
-    // error rather than a command that silently does nothing.
+    // Each hook flag belongs to its own verb, so the flag on any other verb stays a
+    // visible usage error rather than a command that silently does nothing.
     match arguments.next() {
         Some(verb) if verb == "cd" => arguments.any(|arg| arg == HOOK_FLAG),
+        Some(verb) if verb == "agent-session" => arguments.any(|arg| arg == SESSION_HOOK_FLAG),
         _ => false,
     }
 }
@@ -367,7 +371,56 @@ fn parse_cd(args: Vec<OsString>) -> Result<Action, CliError> {
     })
 }
 
-fn read_hook_cwd() -> Option<String> {
+// Only the hook can name the session, so there is no hand-typed form of this verb.
+fn parse_agent_session(args: Vec<OsString>) -> Result<Action, CliError> {
+    if args.len() != 1 || args[0] != SESSION_HOOK_FLAG {
+        return Err(usage_error(
+            "agent-session is run by the Claude Code SessionStart hook Terax installs",
+        ));
+    }
+    // Without a pane the CLI would fall back to the app's cache descriptor and the
+    // app would have no pane to attach the session to.
+    if env::var("TERAX_PANE_ID").is_err() {
+        return Ok(Action::Noop);
+    }
+    let Some(params) = read_hook_input().and_then(|input| session_from_json(&input)) else {
+        return Ok(Action::Noop);
+    };
+    let params = serde_json::to_value(params).map_err(|error| {
+        CliError::new(
+            "serialization_error",
+            format!("could not encode agent-session request: {error}"),
+            EXIT_PROTOCOL,
+        )
+    })?;
+    Ok(Action::Request {
+        method: METHOD_AGENT_SESSION,
+        params,
+    })
+}
+
+fn session_from_json(input: &str) -> Option<AgentSessionParams> {
+    let payload: Value = serde_json::from_str(input).ok()?;
+    if payload.get("hook_event_name").and_then(Value::as_str)? != "SessionStart" {
+        return None;
+    }
+    let session_id = payload.get("session_id").and_then(Value::as_str)?;
+    if !valid_agent_session_id(session_id) {
+        return None;
+    }
+    let source = payload
+        .get("source")
+        .and_then(Value::as_str)
+        .filter(|source| valid_agent_session_source(source))
+        .map(str::to_string);
+    Some(AgentSessionParams {
+        agent: "claude".to_string(),
+        session_id: session_id.to_string(),
+        source,
+    })
+}
+
+fn read_hook_input() -> Option<String> {
     let stdin = std::io::stdin();
     // A hook writes the payload and closes the pipe, but a terminal never closes, so
     // reading one would hang the shell with no output and no prompt back.
@@ -380,7 +433,11 @@ fn read_hook_cwd() -> Option<String> {
         .take(HOOK_INPUT_LIMIT)
         .read_to_string(&mut input)
         .ok()?;
-    hook_cwd_from_json(&input)
+    Some(input)
+}
+
+fn read_hook_cwd() -> Option<String> {
+    hook_cwd_from_json(&read_hook_input()?)
 }
 
 fn hook_cwd_from_json(input: &str) -> Option<String> {
@@ -886,6 +943,65 @@ mod tests {
             hook_cwd_from_json(r#"{"hook_event_name":"CwdChanged","new_cwd":42}"#),
             None
         );
+    }
+
+    #[test]
+    fn session_start_payload_names_the_session() {
+        let payload = r#"{"session_id":"2b1f9a4e-6c1d-4f7e-9a3b-0c5d8e7f1a2b",
+            "transcript_path":"/home/u/.claude/projects/p/2b1f.jsonl","cwd":"/p",
+            "hook_event_name":"SessionStart","source":"startup"}"#;
+        assert_eq!(
+            session_from_json(payload),
+            Some(AgentSessionParams {
+                agent: "claude".into(),
+                session_id: "2b1f9a4e-6c1d-4f7e-9a3b-0c5d8e7f1a2b".into(),
+                source: Some("startup".into()),
+            })
+        );
+    }
+
+    #[test]
+    fn session_start_payload_keeps_the_session_without_a_known_source() {
+        let payload = r#"{"session_id":"abc-1","hook_event_name":"SessionStart","source":"x"}"#;
+        let params = session_from_json(payload).expect("session");
+        assert_eq!(params.session_id, "abc-1");
+        assert_eq!(params.source, None);
+        let payload = r#"{"session_id":"abc-1","hook_event_name":"SessionStart"}"#;
+        assert_eq!(session_from_json(payload).expect("session").source, None);
+    }
+
+    #[test]
+    fn session_start_payload_ignores_other_events_and_unsafe_ids() {
+        assert_eq!(
+            session_from_json(r#"{"session_id":"abc","hook_event_name":"Stop"}"#),
+            None
+        );
+        assert_eq!(
+            session_from_json(r#"{"session_id":"a;b","hook_event_name":"SessionStart"}"#),
+            None
+        );
+        assert_eq!(
+            session_from_json(r#"{"session_id":42,"hook_event_name":"SessionStart"}"#),
+            None
+        );
+        assert_eq!(session_from_json(r#"{"hook_event_name":"SessionStart"}"#), None);
+        assert_eq!(session_from_json("not json"), None);
+    }
+
+    #[test]
+    fn agent_session_is_hook_only() {
+        let error = parse_args(args(&["agent-session"])).expect_err("reject a manual call");
+        assert_eq!(error.code, "usage");
+        let error = parse_args(args(&["agent-session", "abc"])).expect_err("reject an id");
+        assert_eq!(error.code, "usage");
+    }
+
+    #[test]
+    fn hook_mode_covers_the_session_hook_on_its_own_verb() {
+        assert!(hook_mode(&args(&["agent-session", "--terax-session-hook"])));
+        assert!(!hook_mode(&args(&["agent-session"])));
+        assert!(!hook_mode(&args(&["cd", "--terax-session-hook"])));
+        assert!(!hook_mode(&args(&["agent-session", "--terax-follow-hook"])));
     }
 
     #[test]

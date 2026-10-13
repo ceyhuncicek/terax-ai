@@ -13,6 +13,7 @@ export type ShortcutId =
   | "tab.newPreview"
   | "tab.newEditor"
   | "tab.close"
+  | "tab.reopenClosed"
   | "tab.next"
   | "tab.prev"
   | "tab.selectByIndex"
@@ -134,6 +135,13 @@ export const SHORTCUTS: Shortcut[] = [
     label: "Close tab or pane",
     group: "Tabs",
     defaultBindings: [{ [MOD_PROP]: true, key: "w" }],
+  },
+  {
+    id: "tab.reopenClosed",
+    label: "Reopen closed tab",
+    group: "Tabs",
+    // Mod+Shift+T is the browser convention but already opens a Blocks tab.
+    defaultBindings: [{ [MOD_PROP]: true, shift: true, key: "r" }],
   },
   {
     id: "pane.splitRight",

@@ -2,6 +2,7 @@ import type { SearchTarget } from "@/modules/header";
 import { MAX_PANES_PER_TAB, type Tab } from "@/modules/tabs";
 import { leafIds } from "@/modules/terminal";
 import {
+  ArrowTurnBackwardIcon,
   Cancel01Icon,
   DashboardSquare01Icon,
   FileEditIcon,
@@ -47,6 +48,7 @@ export type CommandPaletteActionContext = {
   openGitGraph: () => void;
   toggleSourceControl: () => void;
   closeActiveTabOrPane: () => void;
+  reopenClosedTab: () => void;
   splitPaneRight: () => void;
   splitPaneDown: () => void;
   focusSearch: () => void;
@@ -190,6 +192,15 @@ export function createCommandItems(
       shortcutId: "tab.close",
       disabledReason: closeDisabled,
       run: ctx.closeActiveTabOrPane,
+    },
+    {
+      id: "tab.reopenClosed",
+      title: "Reopen closed tab",
+      group: "Tabs",
+      keywords: ["reopen", "restore", "undo", "closed", "claude", "session"],
+      icon: ArrowTurnBackwardIcon,
+      shortcutId: "tab.reopenClosed",
+      run: ctx.reopenClosedTab,
     },
     {
       id: "pane.splitRight",

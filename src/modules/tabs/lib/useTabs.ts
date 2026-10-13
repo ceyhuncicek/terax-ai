@@ -4,6 +4,8 @@ import {
   createAgentPanePlan,
 } from "@/modules/agents/lib/launcher";
 import {
+  type ClaudeSessionLink,
+  clearLeafResumeClaude as clearLeafResumeClaudeInTree,
   findLeafCwd,
   hasLeaf,
   leafIds,
@@ -13,6 +15,7 @@ import {
   type PaneNode,
   removeLeaf,
   type SplitDir,
+  setLeafClaude as setLeafClaudeInTree,
   setLeafCwd as setLeafCwdInTree,
   siblingLeafOf,
   splitLeaf,
@@ -320,6 +323,25 @@ export function nextActiveInSpace(
   if (sameSpace.length <= 1) return null;
   const idx = sameSpace.findIndex((t) => t.id === closingId);
   return (sameSpace[idx - 1] ?? sameSpace[idx + 1]).id;
+}
+
+// Puts `tab` at `spaceIndex` within its own space's strip, appending when the
+// space has fewer tabs than that now.
+export function insertTabInSpace(
+  tabs: Tab[],
+  tab: Tab,
+  spaceIndex: number,
+): Tab[] {
+  const sameSpace = tabs.filter((t) => t.spaceId === tab.spaceId);
+  const anchor = sameSpace[Math.max(0, spaceIndex)];
+  if (!anchor) {
+    const last = sameSpace[sameSpace.length - 1];
+    if (!last) return [...tabs, tab];
+    const at = tabs.indexOf(last) + 1;
+    return [...tabs.slice(0, at), tab, ...tabs.slice(at)];
+  }
+  const at = tabs.indexOf(anchor);
+  return [...tabs.slice(0, at), tab, ...tabs.slice(at)];
 }
 
 // Gap index is relative to the space's own strip, including the dragged tab.
@@ -886,6 +908,14 @@ export function useTabs(initial?: Partial<TerminalTab>) {
     [],
   );
 
+  /** Puts a hydrated tab back where it was closed and opens it. */
+  const restoreTab = useCallback((tab: Tab, spaceIndex: number) => {
+    const next = insertTabInSpace(tabsRef.current, tab, spaceIndex);
+    tabsRef.current = next;
+    setTabs(next);
+    setActiveId(tab.id);
+  }, []);
+
   /**
    * Opens (or reuses) a terminal tab parked at `cwd`. The tab starts cold, so a
    * background agent costs nothing until someone actually opens it.
@@ -1296,6 +1326,37 @@ export function useTabs(initial?: Partial<TerminalTab>) {
     });
   }, []);
 
+  const setLeafClaude = useCallback(
+    (leafId: number, link: ClaudeSessionLink | undefined) => {
+      setTabs((curr) => {
+        let changed = false;
+        const next = curr.map((t) => {
+          if (t.kind !== "terminal" || !hasLeaf(t.paneTree, leafId)) return t;
+          const paneTree = setLeafClaudeInTree(t.paneTree, leafId, link);
+          if (paneTree === t.paneTree) return t;
+          changed = true;
+          return { ...t, paneTree };
+        });
+        return changed ? next : curr;
+      });
+    },
+    [],
+  );
+
+  const clearLeafResumeClaude = useCallback((leafId: number) => {
+    setTabs((curr) => {
+      let changed = false;
+      const next = curr.map((t) => {
+        if (t.kind !== "terminal" || !hasLeaf(t.paneTree, leafId)) return t;
+        const paneTree = clearLeafResumeClaudeInTree(t.paneTree, leafId);
+        if (paneTree === t.paneTree) return t;
+        changed = true;
+        return { ...t, paneTree };
+      });
+      return changed ? next : curr;
+    });
+  }, []);
+
   const focusPane = useCallback((tabId: number, leafId: number) => {
     setTabs((curr) =>
       curr.map((t) => {
@@ -1497,6 +1558,9 @@ export function useTabs(initial?: Partial<TerminalTab>) {
     updateTab,
     selectByIndex,
     setLeafCwd,
+    setLeafClaude,
+    clearLeafResumeClaude,
+    restoreTab,
     focusPane,
     focusNextPaneInTab,
     swapActivePaneInDirection,

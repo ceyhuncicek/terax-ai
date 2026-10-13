@@ -4,6 +4,9 @@ const OSC_INTRO: u8 = b']';
 const ST_FINAL: u8 = b'\\';
 
 const OSC_MAX: usize = 2048;
+const COMMAND_MAX: usize = 512;
+// Launchers that run the next word as the program.
+const WRAPPERS: &[&str] = &["npx", "bunx", "pnpx", "env", "command", "exec", "time", "nohup"];
 
 const DEFAULT_AGENTS: &[&str] = &["claude", "codex", "gemini", "pi", "opencode", "grok"];
 
@@ -27,11 +30,13 @@ enum Status {
 
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Transition {
-    Started { agent: String },
+    // `command` is the OSC 133;C command line, absent when a hook marker self-armed.
+    Started { agent: String, command: Option<String> },
     Working,
     Attention,
     Finished,
-    Exited,
+    // `closed` when the PTY went away under the agent rather than the command ending.
+    Exited { closed: bool },
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -39,18 +44,31 @@ pub struct AgentSignal {
     pub id: u32,
     pub kind: &'static str,
     pub agent: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub closed: bool,
 }
 
 impl Transition {
     pub fn into_signal(self, id: u32) -> AgentSignal {
+        let signal = |kind| AgentSignal {
+            id,
+            kind,
+            agent: None,
+            command: None,
+            closed: false,
+        };
         match self {
-            Transition::Started { agent } => {
-                AgentSignal { id, kind: "started", agent: Some(agent) }
-            }
-            Transition::Working => AgentSignal { id, kind: "working", agent: None },
-            Transition::Attention => AgentSignal { id, kind: "attention", agent: None },
-            Transition::Finished => AgentSignal { id, kind: "finished", agent: None },
-            Transition::Exited => AgentSignal { id, kind: "exited", agent: None },
+            Transition::Started { agent, command } => AgentSignal {
+                agent: Some(agent),
+                command,
+                ..signal("started")
+            },
+            Transition::Working => signal("working"),
+            Transition::Attention => signal("attention"),
+            Transition::Finished => signal("finished"),
+            Transition::Exited { closed } => AgentSignal { closed, ..signal("exited") },
         }
     }
 }
@@ -132,11 +150,13 @@ impl AgentDetector {
     }
 
     /// Called when the underlying PTY closes. Reports the agent as exited so the
-    /// UI doesn't leave a stale entry if the shell died mid-command.
+    /// UI doesn't leave a stale entry if the shell died mid-command. Flagged as
+    /// closed: app quit, reload and tab close end here, and none of them mean the
+    /// user finished with the agent.
     pub fn finish<F: FnMut(Transition)>(&mut self, mut emit: F) {
         if self.armed {
             self.disarm();
-            emit(Transition::Exited);
+            emit(Transition::Exited { closed: true });
         }
     }
 
@@ -208,12 +228,12 @@ impl AgentDetector {
                 if let Some(agent) = self.match_agent(cmd) {
                     self.armed = true;
                     self.status = Status::Working;
-                    emit(Transition::Started { agent });
+                    emit(Transition::Started { agent, command: command_text(cmd) });
                 }
             }
             Some(b'D') if self.armed => {
                 self.disarm();
-                emit(Transition::Exited);
+                emit(Transition::Exited { closed: false });
             }
             _ => {}
         }
@@ -223,7 +243,7 @@ impl AgentDetector {
         if !self.armed {
             self.armed = true;
             self.status = Status::Working;
-            emit(Transition::Started { agent: agent.to_string() });
+            emit(Transition::Started { agent: agent.to_string(), command: None });
         }
     }
 
@@ -241,22 +261,41 @@ impl AgentDetector {
         }
     }
 
+    // Only the program token names the agent: `brew upgrade claude` or
+    // `man codex` mention one without running it.
     fn match_agent(&self, cmd: &[u8]) -> Option<String> {
         let cmd = std::str::from_utf8(cmd).ok()?;
-        for token in cmd.split_whitespace() {
-            if token.starts_with('-') {
-                continue;
-            }
-            let base = token.rsplit(['/', '\\']).next().unwrap_or(token);
-            if let Some(agent) = self.agents.iter().find(|a| {
+        let mut tokens = cmd.split_whitespace().peekable();
+        while tokens
+            .next_if(|t| t.contains('=') && !t.starts_with('-'))
+            .is_some()
+        {}
+        if tokens.next_if(|t| WRAPPERS.contains(t)).is_some() {
+            while tokens
+                .next_if(|t| t.starts_with('-') || t.contains('='))
+                .is_some()
+            {}
+        }
+        let program = tokens.next()?;
+        if program.contains('=') {
+            return None;
+        }
+        let base = program.rsplit(['/', '\\']).next().unwrap_or(program);
+        self.agents
+            .iter()
+            .find(|a| {
                 base.strip_prefix(a.as_str())
                     .is_some_and(|rest| rest.is_empty() || rest.starts_with('-'))
-            }) {
-                return Some(agent.clone());
-            }
-        }
-        None
+            })
+            .cloned()
     }
+}
+
+// Untrimmed: shells cap the line at 256 characters, and the UI can only tell a
+// cut-off command by its exact length.
+fn command_text(cmd: &[u8]) -> Option<String> {
+    let text = std::str::from_utf8(cmd).ok()?;
+    (!text.trim().is_empty() && text.len() <= COMMAND_MAX).then(|| text.to_string())
 }
 
 #[cfg(test)]
@@ -277,19 +316,26 @@ mod tests {
     }
 
     fn started(agent: &str) -> Transition {
-        Transition::Started { agent: agent.into() }
+        Transition::Started { agent: agent.into(), command: None }
+    }
+
+    fn launched(agent: &str, command: &str) -> Transition {
+        Transition::Started { agent: agent.into(), command: Some(command.into()) }
     }
 
     #[test]
     fn arms_on_agent_command() {
         let mut d = AgentDetector::new();
-        assert_eq!(run(&mut d, &osc("133;C;claude -p hello")), vec![started("claude")]);
+        assert_eq!(
+            run(&mut d, &osc("133;C;claude -p hello")),
+            vec![launched("claude", "claude -p hello")]
+        );
     }
 
     #[test]
     fn arms_on_pi_command() {
         let mut d = AgentDetector::new();
-        assert_eq!(run(&mut d, &osc("133;C;pi")), vec![started("pi")]);
+        assert_eq!(run(&mut d, &osc("133;C;pi")), vec![launched("pi", "pi")]);
     }
 
     #[test]
@@ -298,7 +344,7 @@ mod tests {
             let mut d = AgentDetector::new();
             assert_eq!(
                 run(&mut d, &osc(&format!("133;C;{agent}"))),
-                vec![started(agent)]
+                vec![launched(agent, agent)]
             );
         }
     }
@@ -308,16 +354,22 @@ mod tests {
         let mut d = AgentDetector::new();
         assert_eq!(
             run(&mut d, &osc("133;C;/usr/local/bin/codex exec")),
-            vec![started("codex")]
+            vec![launched("codex", "/usr/local/bin/codex exec")]
         );
         let mut d2 = AgentDetector::new();
-        assert_eq!(run(&mut d2, &osc("133;C;npx claude")), vec![started("claude")]);
+        assert_eq!(
+            run(&mut d2, &osc("133;C;npx claude")),
+            vec![launched("claude", "npx claude")]
+        );
     }
 
     #[test]
     fn arms_on_dash_suffixed_alias() {
         let mut d = AgentDetector::new();
-        assert_eq!(run(&mut d, &osc("133;C;claude-enigma")), vec![started("claude")]);
+        assert_eq!(
+            run(&mut d, &osc("133;C;claude-enigma")),
+            vec![launched("claude", "claude-enigma")]
+        );
     }
 
     #[test]
@@ -326,6 +378,52 @@ mod tests {
         assert!(run(&mut d, &osc("133;C;vim src/main.rs")).is_empty());
         assert!(run(&mut d, &osc("133;C;cat claude.txt")).is_empty());
         assert!(run(&mut d, &osc("133;C;claudexyz")).is_empty());
+    }
+
+    #[test]
+    fn mentions_of_an_agent_outside_the_program_slot_do_not_arm() {
+        for cmd in [
+            "brew upgrade claude",
+            "which claude",
+            "man codex",
+            "ls pi",
+            "git log -- claude",
+            "npx -y prettier claude.md",
+        ] {
+            let mut d = AgentDetector::new();
+            assert!(run(&mut d, &osc(&format!("133;C;{cmd}"))).is_empty(), "{cmd}");
+        }
+    }
+
+    #[test]
+    fn wrappers_and_assignments_before_the_program_still_arm() {
+        for (cmd, agent) in [
+            ("env FOO=1 claude", "claude"),
+            ("env -i PATH=/bin codex exec", "codex"),
+            ("command claude --resume x", "claude"),
+            ("exec gemini", "gemini"),
+            ("time claude", "claude"),
+            ("nohup opencode", "opencode"),
+            ("bunx claude", "claude"),
+            ("A=1 B=2 /opt/bin/claude", "claude"),
+        ] {
+            let mut d = AgentDetector::new();
+            assert_eq!(
+                run(&mut d, &osc(&format!("133;C;{cmd}"))),
+                vec![launched(agent, cmd)],
+                "{cmd}"
+            );
+        }
+    }
+
+    #[test]
+    fn env_assignments_are_not_the_agent() {
+        let mut d = AgentDetector::new();
+        assert!(run(&mut d, &osc("133;C;PATH=/tmp/evil/claude make")).is_empty());
+        assert_eq!(
+            run(&mut d, &osc("133;C;ANTHROPIC_MODEL=opus claude")),
+            vec![launched("claude", "ANTHROPIC_MODEL=opus claude")]
+        );
     }
 
     #[test]
@@ -414,7 +512,10 @@ mod tests {
     fn exits_on_133d() {
         let mut d = AgentDetector::new();
         run(&mut d, &osc("133;C;claude"));
-        assert_eq!(run(&mut d, &osc("133;D;0")), vec![Transition::Exited]);
+        assert_eq!(
+            run(&mut d, &osc("133;D;0")),
+            vec![Transition::Exited { closed: false }]
+        );
         assert!(run(&mut d, &osc("133;D;0")).is_empty());
     }
 
@@ -435,7 +536,7 @@ mod tests {
         assert!(run(&mut d, b"133;C;cla").is_empty());
         let mut out = run(&mut d, b"ude");
         out.extend(run(&mut d, &[ESC, ST_FINAL]));
-        assert_eq!(out, vec![started("claude")]);
+        assert_eq!(out, vec![launched("claude", "claude")]);
     }
 
     #[test]
@@ -444,10 +545,35 @@ mod tests {
         run(&mut d, &osc("133;C;claude"));
         let mut out = Vec::new();
         d.finish(|t| out.push(t));
-        assert_eq!(out, vec![Transition::Exited]);
+        assert_eq!(out, vec![Transition::Exited { closed: true }]);
         let mut out2 = Vec::new();
         d.finish(|t| out2.push(t));
         assert!(out2.is_empty());
+    }
+
+    #[test]
+    fn started_signal_carries_the_command_and_exit_says_how_it_ended() {
+        let signal = launched("claude", "claude --model opus").into_signal(7);
+        let value = serde_json::to_value(&signal).unwrap();
+        assert_eq!(value["command"], "claude --model opus");
+        assert!(value.get("closed").is_none());
+
+        let closed =
+            serde_json::to_value(Transition::Exited { closed: true }.into_signal(7)).unwrap();
+        assert_eq!(closed["kind"], "exited");
+        assert_eq!(closed["closed"], true);
+        let ended =
+            serde_json::to_value(Transition::Exited { closed: false }.into_signal(7)).unwrap();
+        assert!(ended.get("closed").is_none());
+        assert!(ended.get("command").is_none());
+    }
+
+    #[test]
+    fn command_text_rejects_blank_and_oversized_commands() {
+        assert_eq!(command_text(b"claude "), Some("claude ".into()));
+        assert_eq!(command_text(b"   "), None);
+        assert_eq!(command_text(&vec![b'a'; COMMAND_MAX + 1]), None);
+        assert_eq!(command_text(&[0xff, 0xfe]), None);
     }
 
     #[test]

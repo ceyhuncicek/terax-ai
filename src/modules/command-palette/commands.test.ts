@@ -36,6 +36,7 @@ function baseContext(
     openGitGraph: noop,
     toggleSourceControl: noop,
     closeActiveTabOrPane: noop,
+    reopenClosedTab: noop,
     splitPaneRight: noop,
     splitPaneDown: noop,
     focusSearch: noop,

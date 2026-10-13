@@ -12,16 +12,18 @@ enum Delivery {
 }
 
 // What a given hook does. Notify emits the OSC 777 status marker; Follow asks
-// Terax to follow the agent into a new project root.
+// Terax to follow the agent into a new project root; Session tells Terax which
+// session runs in the pane so a restored pane can resume it.
 #[derive(Clone, Copy, PartialEq)]
 enum HookKind {
     Notify,
     Follow,
+    Session,
 }
 
 struct HookSpec {
     event: &'static str,
-    // Status marker for Notify; unused for Follow.
+    // Status marker for Notify; unused otherwise.
     marker: &'static str,
     kind: HookKind,
 }
@@ -60,6 +62,11 @@ const AGENTS: &[AgentSpec] = &[
                 event: "CwdChanged",
                 marker: "",
                 kind: HookKind::Follow,
+            },
+            HookSpec {
+                event: "SessionStart",
+                marker: "",
+                kind: HookKind::Session,
             },
         ],
         matcher: false,
@@ -145,16 +152,18 @@ export default function (pi: ExtensionAPI) {
 // emitted (legacy /dev/tty Claude, current TerminalSequence, Osc, Windows
 // helper). Used to prune our own groups before reinserting so installs are
 // idempotent and migrate older markers.
-const OWNED_MARKERS: [&str; 4] = [
+const OWNED_MARKERS: [&str; 5] = [
     "notify;Terax;",
     "terax;notify",
     "__terax_notify",
     FOLLOW_MARKER,
+    SESSION_MARKER,
 ];
 
-// Terax-specific spelling so pruning our own groups can never match a hook the
+// Terax-specific spellings so pruning our own groups can never match a hook the
 // user wrote themselves.
 const FOLLOW_MARKER: &str = "--terax-follow-hook";
+const SESSION_MARKER: &str = "--terax-session-hook";
 
 fn find(agent: &str) -> Result<&'static AgentSpec, String> {
     AGENTS
@@ -167,6 +176,7 @@ fn hook_command(spec: &AgentSpec, hook: &HookSpec) -> String {
     let event = hook.marker;
     match (hook.kind, spec.delivery) {
         (HookKind::Follow, _) => follow_command(),
+        (HookKind::Session, _) => session_command(),
         (HookKind::Notify, Delivery::TerminalSequence) => format!(
             r#"[ -n "$TERAX_TERMINAL" ] && printf '{{"terminalSequence":"\\u001b]777;notify;Terax;{event}\\u0007"}}' || true"#
         ),
@@ -179,6 +189,12 @@ fn hook_command(spec: &AgentSpec, hook: &HookSpec) -> String {
 // "command not found" on every directory change.
 fn follow_command() -> String {
     r#"[ -n "$TERAX_CLI" ] && [ -n "$TERAX_CONTROL_TOKEN" ] && "$TERAX_CLI" cd --terax-follow-hook || true"#.to_string()
+}
+
+// SessionStart stdout becomes model context, so the CLI prints nothing in hook
+// mode and the guard keeps WSL panes, which have no CLI, just as quiet.
+fn session_command() -> String {
+    r#"[ -n "$TERAX_CLI" ] && [ -n "$TERAX_CONTROL_TOKEN" ] && "$TERAX_CLI" agent-session --terax-session-hook || true"#.to_string()
 }
 
 // Marker to the tty, then `{}` on stdout: Codex/Gemini require a JSON no-op.
@@ -203,6 +219,7 @@ fn status_needle(spec: &AgentSpec, hook: &HookSpec) -> String {
     let event = hook.marker;
     match (hook.kind, spec.delivery) {
         (HookKind::Follow, _) => FOLLOW_MARKER.to_string(),
+        (HookKind::Session, _) => SESSION_MARKER.to_string(),
         (HookKind::Notify, Delivery::TerminalSequence) => format!("notify;Terax;{event}"),
         (HookKind::Notify, Delivery::Osc) => {
             #[cfg(unix)]
@@ -273,7 +290,9 @@ fn merge_hooks(mut root: Value, spec: &AgentSpec, follow: bool) -> Value {
             arr.push(group);
         } else if arr.is_empty() {
             // Nothing but ours was here, so leave no empty key behind.
-            hooks.remove(hook.event);
+            // shift_remove, not remove: under preserve_order remove swaps the
+            // last key into this slot and reorders the user's file.
+            hooks.shift_remove(hook.event);
         }
     }
     root
@@ -316,16 +335,42 @@ fn pi_extension_contents(
     Ok(PI_EXTENSION)
 }
 
+// Writes through a symlink to its target, so a dotfiles-managed config stays a
+// link, and creates the replacement with the old file's permissions so a
+// private file is never readable by others, not even for the rename window.
 fn write_atomic(path: &std::path::Path, contents: &str) -> Result<(), String> {
-    let tmp = path.with_extension("terax-tmp");
-    std::fs::write(&tmp, contents).map_err(|e| format!("write {}: {e}", tmp.display()))?;
-    std::fs::rename(&tmp, path).map_err(|e| {
+    use std::io::Write;
+
+    let target = write_target(path)?;
+    let tmp = target.with_extension("terax-tmp");
+    let permissions = std::fs::metadata(&target).ok().map(|m| m.permissions());
+    let _ = std::fs::remove_file(&tmp);
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        options.mode(permissions.as_ref().map_or(0o644, |p| p.mode() & 0o7777));
+    }
+    let written = options
+        .open(&tmp)
+        .and_then(|mut file| file.write_all(contents.as_bytes()));
+    // The umask can narrow the mode given to open; widen it back to the original.
+    let result = written.and_then(|()| match &permissions {
+        Some(permissions) => std::fs::set_permissions(&tmp, permissions.clone()),
+        None => Ok(()),
+    });
+    if let Err(e) = result {
         let _ = std::fs::remove_file(&tmp);
-        format!("rename into {}: {e}", path.display())
+        return Err(format!("write {}: {e}", tmp.display()));
+    }
+    std::fs::rename(&tmp, &target).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        format!("rename into {}: {e}", target.display())
     })
 }
 
-fn pi_extension_write_path(path: &std::path::Path) -> Result<std::path::PathBuf, String> {
+fn write_target(path: &std::path::Path) -> Result<std::path::PathBuf, String> {
     match std::fs::symlink_metadata(path) {
         Ok(metadata) if metadata.file_type().is_symlink() => {
             std::fs::canonicalize(path).map_err(|e| format!("resolve {}: {e}", path.display()))
@@ -346,7 +391,7 @@ fn enable_pi_extension_at(path: &std::path::Path) -> Result<(), String> {
         Err(e) => return Err(format!("read {}: {e}", path.display())),
     };
     let contents = pi_extension_contents(existing.as_deref(), path)?;
-    write_atomic(&pi_extension_write_path(path)?, contents)
+    write_atomic(path, contents)
 }
 
 fn enable_pi_extension() -> Result<(), String> {
@@ -372,6 +417,44 @@ pub fn agent_enable_hooks(agent: String, follow: bool) -> Result<(), String> {
     let merged = merge_hooks(existing, spec, follow);
     let out = serde_json::to_string_pretty(&merged).map_err(|e| e.to_string())?;
     write_atomic(&path, &out)
+}
+
+/// Brings an existing install up to the current hook set without installing
+/// anything for someone who never opted in. Returns whether the file changed.
+#[tauri::command]
+pub fn agent_upgrade_hooks(agent: String) -> Result<bool, String> {
+    let Ok(spec) = find(&agent) else {
+        return Ok(false);
+    };
+    let path = settings_path(spec)?;
+    let content = match std::fs::read_to_string(&path) {
+        Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(e) => return Err(format!("read {}: {e}", path.display())),
+    };
+    let Some(follow) = upgrade_follow_choice(spec, &content) else {
+        return Ok(false);
+    };
+    let merged = merge_hooks(existing_config(Some(&content), &path)?, spec, follow);
+    let out = serde_json::to_string_pretty(&merged).map_err(|e| e.to_string())?;
+    write_atomic(&path, &out)?;
+    Ok(true)
+}
+
+// Some(follow) when an opted-in install is missing a hook. The follow choice is
+// read back from the file so an upgrade never flips it either way.
+fn upgrade_follow_choice(spec: &AgentSpec, content: &str) -> Option<bool> {
+    if !notify_hooks_installed(spec, content) || session_hooks_installed(spec, content) {
+        return None;
+    }
+    Some(follow_hook_installed(spec, content))
+}
+
+fn session_hooks_installed(spec: &AgentSpec, content: &str) -> bool {
+    spec.events
+        .iter()
+        .filter(|h| h.kind == HookKind::Session)
+        .all(|h| content.contains(&status_needle(spec, h)))
 }
 
 // The raw OSC 777 bytes the detector parses. Kept in one place so the Windows
@@ -512,6 +595,50 @@ mod tests {
         // WSL panes set TERAX_TERMINAL but have no CLI, so guarding on it would
         // make every directory change print "command not found".
         assert!(!cmd.contains("TERAX_TERMINAL"));
+    }
+
+    #[test]
+    fn claude_installs_a_silent_session_start_hook() {
+        let out = merge_hooks(json!({}), spec("claude"), false);
+        assert_eq!(hook_count(&out, "SessionStart"), 1);
+        let cmd = command(&out, "SessionStart", 0);
+        assert!(cmd.contains("agent-session --terax-session-hook"));
+        assert!(cmd.contains("$TERAX_CLI"));
+        assert!(cmd.ends_with("|| true"));
+        assert!(!cmd.contains("printf"));
+        assert!(!cmd.contains("echo"));
+    }
+
+    #[test]
+    fn upgrade_adds_the_session_hook_to_an_opted_in_install_only() {
+        let s = spec("claude");
+        let legacy = |follow: bool| {
+            let mut root = merge_hooks(json!({}), s, follow);
+            root["hooks"].as_object_mut().unwrap().shift_remove("SessionStart");
+            serde_json::to_string(&root).unwrap()
+        };
+        assert_eq!(upgrade_follow_choice(s, &legacy(true)), Some(true));
+        assert_eq!(upgrade_follow_choice(s, &legacy(false)), Some(false));
+
+        let current = serde_json::to_string(&merge_hooks(json!({}), s, true)).unwrap();
+        assert_eq!(upgrade_follow_choice(s, &current), None);
+        assert_eq!(upgrade_follow_choice(s, "{}"), None);
+        assert_eq!(upgrade_follow_choice(s, r#"{"permissions":{}}"#), None);
+        // Codex has no session hook, so an install there never needs upgrading.
+        let codex = serde_json::to_string(&merge_hooks(json!({}), spec("codex"), true)).unwrap();
+        assert_eq!(upgrade_follow_choice(spec("codex"), &codex), None);
+    }
+
+    #[test]
+    fn upgrade_keeps_the_follow_choice_found_in_the_file() {
+        let s = spec("claude");
+        let mut root = merge_hooks(json!({}), s, false);
+        root["hooks"].as_object_mut().unwrap().shift_remove("SessionStart");
+        let follow = upgrade_follow_choice(s, &root.to_string()).unwrap();
+        let upgraded = merge_hooks(root, s, follow);
+        assert_eq!(hook_count(&upgraded, "SessionStart"), 1);
+        assert_eq!(hook_count(&upgraded, "CwdChanged"), 0);
+        assert!(notify_hooks_installed(s, &upgraded.to_string()));
     }
 
     #[test]
@@ -719,6 +846,57 @@ mod tests {
             .is_symlink());
         assert_eq!(std::fs::read_to_string(target).unwrap(), PI_EXTENSION);
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn settings_writes_follow_a_symlink_and_keep_permissions() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("dotfiles-settings.json");
+        let link = dir.path().join("settings.json");
+        std::fs::write(&target, "{}").unwrap();
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o600)).unwrap();
+        symlink(&target, &link).unwrap();
+
+        write_atomic(&link, r#"{"hooks":{}}"#).unwrap();
+
+        assert!(std::fs::symlink_metadata(&link).unwrap().file_type().is_symlink());
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), r#"{"hooks":{}}"#);
+        let mode = std::fs::metadata(&target).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+        assert!(!dir.path().join("dotfiles-settings.terax-tmp").exists());
+    }
+
+    #[test]
+    fn removing_the_follow_hook_keeps_the_other_events_in_place() {
+        let s = spec("claude");
+        let input = json!({
+            "hooks": {
+                "PreToolUse": [ { "hooks": [ { "type": "command", "command": "a.sh" } ] } ],
+                "CwdChanged": [ { "hooks": [ { "type": "command", "command": follow_command() } ] } ],
+                "Mine": [ { "hooks": [ { "type": "command", "command": "b.sh" } ] } ],
+                "Last": [ { "hooks": [ { "type": "command", "command": "c.sh" } ] } ]
+            }
+        });
+        let out = merge_hooks(input, s, false);
+        let keys: Vec<&String> = out["hooks"].as_object().unwrap().keys().collect();
+        assert_eq!(keys[..3], ["PreToolUse", "Mine", "Last"]);
+        assert!(out["hooks"].get("CwdChanged").is_none());
+    }
+
+    #[test]
+    fn rewriting_settings_keeps_the_users_key_order() {
+        let input: Value = serde_json::from_str(
+            r#"{"model":"opus","permissions":{"allow":[]},"env":{"Z":"1","A":"2"}}"#,
+        )
+        .unwrap();
+        let out = merge_hooks(input, spec("claude"), false);
+        let keys: Vec<&String> = out.as_object().unwrap().keys().collect();
+        assert_eq!(keys, ["model", "permissions", "env", "hooks"]);
+        let env: Vec<&String> = out["env"].as_object().unwrap().keys().collect();
+        assert_eq!(env, ["Z", "A"]);
     }
 
     #[test]

@@ -24,6 +24,9 @@ export function useSpacePersistence({
   const last = useRef<Map<string, LastWrite>>(new Map());
   const seeded = useRef(false);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const immediate = useRef(false);
+  const enabledRef = useRef(enabled);
+  enabledRef.current = enabled;
   const latest = useRef<Snapshot>({ tabs, activeId, activeSpaceId });
   latest.current = { tabs, activeId, activeSpaceId };
 
@@ -39,7 +42,7 @@ export function useSpacePersistence({
     }
   }
 
-  const flush = useCallback((snap: Snapshot) => {
+  const flush = useCallback((snap: Snapshot, durable = false) => {
     const groups = new Map<string, Tab[]>();
     for (const t of snap.tabs) {
       const arr = groups.get(t.spaceId);
@@ -66,7 +69,7 @@ export function useSpacePersistence({
         continue;
       }
       last.current.set(spaceId, { json, activeTabIndex });
-      void saveState(spaceId, { tabs: serialized, activeTabIndex });
+      void saveState(spaceId, { tabs: serialized, activeTabIndex }, durable);
     }
   }, []);
 
@@ -74,6 +77,12 @@ export function useSpacePersistence({
     if (!enabled) return;
     const snap: Snapshot = { tabs, activeId, activeSpaceId };
     if (timer.current) clearTimeout(timer.current);
+    if (immediate.current) {
+      immediate.current = false;
+      timer.current = null;
+      flush(snap, true);
+      return;
+    }
     timer.current = setTimeout(() => {
       timer.current = null;
       flush(snap);
@@ -99,4 +108,10 @@ export function useSpacePersistence({
       flush(latest.current);
     };
   }, [enabled, flush]);
+
+  // Writes the next tab change straight to disk instead of debouncing it, for
+  // state a power loss inside the debounce window must not cost.
+  return useCallback(() => {
+    if (enabledRef.current) immediate.current = true;
+  }, []);
 }

@@ -13,6 +13,10 @@ export type AgentSignal = {
   id: number;
   kind: AgentSignalKind;
   agent: string | null;
+  /** The command line that started the agent, on `started` when the shell reported it. */
+  command?: string;
+  /** On `exited`: the PTY closed under the agent instead of the command ending. */
+  closed?: boolean;
 };
 
 export type AgentSession = {

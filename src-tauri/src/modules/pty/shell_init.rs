@@ -432,6 +432,64 @@ mod unix {
     mod tests {
         use super::*;
 
+        // Agent detection arms on the OSC 133;C command text, so bash has to
+        // report it the way zsh and fish do.
+        #[test]
+        fn bash_preexec_marker_reports_the_command_line() {
+            assert!(BASHRC.contains("133;C;$(_terax_command_text)"));
+            let bash = std::env::var("TERAX_TEST_BASH").unwrap_or_else(|_| "bash".into());
+            let version = std::process::Command::new(&bash)
+                .args(["-c", "echo $((BASH_VERSINFO[0] * 100 + BASH_VERSINFO[1]))"])
+                .output();
+            let Some(version) = version
+                .ok()
+                .and_then(|out| String::from_utf8(out.stdout).ok())
+                .and_then(|v| v.trim().parse::<u32>().ok())
+            else {
+                return;
+            };
+            // PS0 needs 4.4; older bash (macOS /bin/bash) has no pre-exec marker.
+            if version < 404 {
+                return;
+            }
+            let home = tempfile::tempdir().expect("temp home");
+            let rc = home.path().join("terax-bashrc");
+            std::fs::write(&rc, BASHRC).expect("write rc");
+            let mut child = std::process::Command::new(&bash)
+                .arg("--rcfile")
+                .arg(&rc)
+                .arg("-i")
+                .env("HOME", home.path())
+                .env("HISTFILE", home.path().join("history"))
+                .env("HISTCONTROL", "ignoreboth")
+                .env_remove("PROMPT_COMMAND")
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .expect("spawn bash");
+            use std::io::Write;
+            child
+                .stdin
+                .take()
+                .expect("stdin")
+                .write_all(b"true first\n true hidden\ntrue first\nclaude --model opus\n")
+                .expect("write commands");
+            let out = child.wait_with_output().expect("bash output");
+            let text = String::from_utf8_lossy(&out.stderr).into_owned()
+                + &String::from_utf8_lossy(&out.stdout);
+            let commands: Vec<&str> = text
+                .split("\x1b]133;C;")
+                .skip(1)
+                .map(|rest| rest.split('\x1b').next().unwrap_or(""))
+                .collect();
+            assert_eq!(
+                commands,
+                vec!["true first", "", "", "claude --model opus"],
+                "{text:?}"
+            );
+        }
+
         #[test]
         fn classify_maps_known_shells() {
             assert!(matches!(Shell::classify("/bin/zsh"), Shell::Zsh));

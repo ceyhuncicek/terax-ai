@@ -6,6 +6,9 @@
 # - Pre-exec marker uses PS0 (bash 4.4+). On older bash (macOS default 3.2) we
 #   skip it — a fragile DEBUG-trap alternative would clobber the user's own
 #   traps and interact badly with debuggers.
+# - PS0 cannot see the command line, so the marker reads it back from history
+#   and only reports an entry newer than the one recorded at the last prompt;
+#   a command left out of history (ignorespace, ignoredups) reports no text.
 
 if [ -z "$__TERAX_HOOKS_LOADED" ]; then
   __TERAX_HOOKS_LOADED=1
@@ -48,9 +51,25 @@ if [ -z "$__TERAX_HOOKS_LOADED" ]; then
     done
   }
 
+  _terax_last_history() {
+    local HISTTIMEFORMAT=
+    builtin history 1 2>/dev/null
+  }
+
+  # Runs inside PS0's command substitution, so it can only print.
+  _terax_command_text() {
+    local entry
+    entry=$(_terax_last_history)
+    [ -n "$entry" ] && [ "$entry" != "$_terax_history_mark" ] || return 0
+    [[ $entry =~ ^[[:space:]]*[0-9]+\*?[[:space:]]+(.*)$ ]] || return 0
+    entry=${BASH_REMATCH[1]//[[:cntrl:]]/ }
+    printf '%s' "${entry:0:256}"
+  }
+
   _terax_precmd() {
     local _terax_ret=$?
     printf '\e]133;D;%s\e\\' "$_terax_ret"
+    _terax_history_mark=$(_terax_last_history)
     printf '\e]7;file://%s%s\e\\' "${HOSTNAME:-$(uname -n 2>/dev/null)}" "$(_terax_urlencode "$PWD")"
     if [ -n "$TERAX_BLOCKS" ]; then
       # Host renders its own input bar: suppress the shell prompt (B marker
@@ -80,9 +99,9 @@ if [ -z "$__TERAX_HOOKS_LOADED" ]; then
     if [ -n "$TERAX_BLOCKS" ]; then
       # PS0 only expands, never executes: the arithmetic inside the array
       # subscript sets the seen flag while the unset array expands to nothing.
-      PS0='\[\e]133;C\e\\\]${_terax_noop[$((_terax_block_seen=1))]}'"${PS0:-}"
+      PS0='\[\e]133;C;$(_terax_command_text)\e\\\]${_terax_noop[$((_terax_block_seen=1))]}'"${PS0:-}"
     else
-      PS0='\[\e]133;C\e\\\]'"${PS0:-}"
+      PS0='\[\e]133;C;$(_terax_command_text)\e\\\]'"${PS0:-}"
     fi
   fi
 

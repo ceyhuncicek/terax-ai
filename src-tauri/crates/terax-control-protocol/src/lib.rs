@@ -8,6 +8,7 @@ pub const METHOD_CAPABILITIES: &str = "capabilities";
 pub const METHOD_IDENTIFY: &str = "identify";
 pub const METHOD_OPEN: &str = "open";
 pub const METHOD_CD: &str = "cd";
+pub const METHOD_AGENT_SESSION: &str = "agent-session";
 pub const SERVER_RESPONSE_ID: &str = "server";
 pub const METHODS: &[&str] = &[
     METHOD_PING,
@@ -15,7 +16,9 @@ pub const METHODS: &[&str] = &[
     METHOD_IDENTIFY,
     METHOD_OPEN,
     METHOD_CD,
+    METHOD_AGENT_SESSION,
 ];
+pub const AGENT_SESSION_ID_MAX: usize = 128;
 
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
 pub struct CallerContext {
@@ -136,6 +139,28 @@ fn default_focus() -> bool {
     true
 }
 
+/// Links the calling pane to the agent session running in it, so a restored
+/// pane can resume that session.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct AgentSessionParams {
+    pub agent: String,
+    pub session_id: String,
+    /// The agent's own reason for the session starting (startup, resume, clear, compact).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+}
+
+/// The id is typed back into a shell on resume, so only plain id characters pass.
+pub fn valid_agent_session_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= AGENT_SESSION_ID_MAX
+        && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+}
+
+pub fn valid_agent_session_source(source: &str) -> bool {
+    matches!(source, "startup" | "resume" | "clear" | "compact")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -183,7 +208,10 @@ mod tests {
 
     #[test]
     fn methods_catalog_matches_the_wire_literals() {
-        assert_eq!(METHODS, &["ping", "capabilities", "identify", "open", "cd"]);
+        assert_eq!(
+            METHODS,
+            &["ping", "capabilities", "identify", "open", "cd", "agent-session"]
+        );
     }
 
     #[test]
@@ -294,5 +322,44 @@ mod tests {
     #[test]
     fn methods_include_cd() {
         assert!(METHODS.contains(&METHOD_CD));
+    }
+
+    #[test]
+    fn agent_session_params_omit_an_absent_source() {
+        let params = AgentSessionParams {
+            agent: "claude".into(),
+            session_id: "0f8c-11".into(),
+            source: None,
+        };
+        assert_eq!(
+            serde_json::to_value(&params).unwrap(),
+            json!({ "agent": "claude", "session_id": "0f8c-11" })
+        );
+        let back: AgentSessionParams = serde_json::from_value(json!({
+            "agent": "claude",
+            "session_id": "0f8c-11",
+            "source": "resume",
+        }))
+        .unwrap();
+        assert_eq!(back.source.as_deref(), Some("resume"));
+    }
+
+    #[test]
+    fn agent_session_ids_are_shell_inert() {
+        assert!(valid_agent_session_id("2b1f9a4e-6c1d-4f7e-9a3b-0c5d8e7f1a2b"));
+        assert!(!valid_agent_session_id(""));
+        assert!(!valid_agent_session_id("abc; rm -rf ~"));
+        assert!(!valid_agent_session_id("$(id)"));
+        assert!(!valid_agent_session_id("a b"));
+        assert!(!valid_agent_session_id(&"a".repeat(AGENT_SESSION_ID_MAX + 1)));
+    }
+
+    #[test]
+    fn agent_session_sources_are_the_documented_four() {
+        for source in ["startup", "resume", "clear", "compact"] {
+            assert!(valid_agent_session_source(source));
+        }
+        assert!(!valid_agent_session_source("other"));
+        assert!(!valid_agent_session_source(""));
     }
 }

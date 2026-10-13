@@ -15,6 +15,7 @@ import {
   AgentNotificationsBridge,
   findAgentLauncher,
   nextAttentionTarget,
+  useClaudeSessions,
   validateAgentLaunchCommand,
 } from "@/modules/agents";
 import {
@@ -68,13 +69,16 @@ import {
 } from "@/modules/source-control";
 import {
   SpaceSwitcher,
+  useClosedTabs,
   useSpacePersistence,
   useSpaces,
   useSpacesBoot,
 } from "@/modules/spaces";
 import { StatusBar } from "@/modules/statusbar";
 import {
+  applyCloseTabsPlan,
   type CloseTabsPlan,
+  nextActiveInSpace,
   TabSwitcherHud,
   useTabSwitcher,
   useTabs,
@@ -175,6 +179,9 @@ export default function App() {
     updateTab,
     selectByIndex,
     setLeafCwd,
+    setLeafClaude,
+    clearLeafResumeClaude,
+    restoreTab,
     focusPane,
     focusNextPaneInTab,
     swapActivePaneInDirection,
@@ -272,11 +279,26 @@ export default function App() {
     adoptWorkspaceEnv,
   });
 
-  useSpacePersistence({
+  const persistSoon = useSpacePersistence({
     tabs,
     activeId,
     activeSpaceId: activeSpaceId ?? DEFAULT_SPACE_ID,
     enabled: spacesHydrated,
+  });
+
+  const recordClaudeSession = useClaudeSessions({
+    tabs,
+    tabsRef,
+    setLeafClaude,
+    clearLeafResumeClaude,
+    persistSoon,
+  });
+
+  const closedTabs = useClosedTabs({
+    tabsRef,
+    activeSpaceIdRef,
+    allocId,
+    restoreTab,
   });
 
   const prevSpaceRef = useRef(activeSpaceId);
@@ -407,6 +429,30 @@ export default function App() {
     [closeTabs],
   );
 
+  // Only the user's own close actions are remembered: a tab dropped because its
+  // file was deleted has nothing to come back to.
+  const closeTabRemembered = useCallback(
+    (id: number) => {
+      if (nextActiveInSpace(tabsRef.current, id) !== null) {
+        closedTabs.remember([id]);
+      }
+      disposeTab(id);
+    },
+    [closedTabs, disposeTab],
+  );
+
+  const closeTabsRemembered = useCallback(
+    (anchorId: number, plan: CloseTabsPlan) => {
+      // Only what closeTabs will really close: the plan may name tabs it skips.
+      // Reversed so reopening walks back left to right into the old slots.
+      const closing =
+        applyCloseTabsPlan(tabsRef.current, anchorId, plan)?.closeIds ?? [];
+      closedTabs.remember([...closing].reverse());
+      disposeTabs(anchorId, plan);
+    },
+    [closedTabs, disposeTabs],
+  );
+
   const disposeDeletedTabs = useCallback(
     (ids: number[]) => {
       if (ids.length === 0) return;
@@ -442,9 +488,9 @@ export default function App() {
   } = useTabCloseGuards({
     tabs,
     activeId,
-    disposeTab,
+    disposeTab: closeTabRemembered,
     disposeDeletedTabs,
-    disposeTabs,
+    disposeTabs: closeTabsRemembered,
   });
 
   const { pendingAppClose, confirmAppClose, cancelAppClose } =
@@ -892,6 +938,7 @@ export default function App() {
       "tab.newPreview": () => openPreviewTab(""),
       "tab.newEditor": () => setNewEditorOpen(true),
       "tab.close": handleCloseTabOrPane,
+      "tab.reopenClosed": () => void closedTabs.reopen(),
       "tab.next": () => stepSwitcher(1),
       "tab.prev": () => stepSwitcher(-1),
       "tab.selectByIndex": (e) =>
@@ -960,6 +1007,7 @@ export default function App() {
       stepSwitcher,
       cycleSpace,
       handleCloseTabOrPane,
+      closedTabs,
       openNewTab,
       openNewBlockTab,
       openNewPrivateTab,
@@ -1262,6 +1310,7 @@ export default function App() {
             openGitGraph: openGitGraphFromContext,
             toggleSourceControl,
             closeActiveTabOrPane: handleCloseTabOrPane,
+            reopenClosedTab: () => void closedTabs.reopen(),
             splitPaneRight: () => splitActivePaneInActiveTab("row"),
             splitPaneDown: () => splitActivePaneInActiveTab("col"),
             focusSearch: () => searchInlineRef.current?.focus(),
@@ -1293,6 +1342,7 @@ export default function App() {
       openGitGraphFromContext,
       toggleSourceControl,
       handleCloseTabOrPane,
+      closedTabs,
       splitActivePaneInActiveTab,
       toggleSidebar,
       toggleHiddenFiles,
@@ -1408,6 +1458,7 @@ export default function App() {
     activeSpaceIdRef,
     onOpen: openControlFile,
     onCd: openControlDirectory,
+    onAgentSession: recordClaudeSession,
   });
 
   useEffect(() => {

@@ -40,6 +40,7 @@ The themes below frame every scope decision.
 - [x] Private terminal tabs with AI-context redaction
 - [x] WSL bridge as workspace environment
 - [x] Spaces with restored tabs, working directories, and split-pane layouts
+- [x] Claude Code sessions resume in their restored pane; closed tabs reopen with their session
 
 ### Editor
 

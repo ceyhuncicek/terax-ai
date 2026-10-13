@@ -11,8 +11,10 @@ use std::time::{Duration, SystemTime};
 use serde_json::{json, Value};
 use tauri::{Emitter, Manager};
 use terax_control_protocol::{
+    valid_agent_session_id, valid_agent_session_source, AgentSessionParams, CallerContext,
     CdParams, ControlDescriptor, ControlRequest, ControlResponse, FrontendRequest,
-    FrontendResponse, OpenParams, MAX_MESSAGE_BYTES, METHODS, METHOD_CAPABILITIES, METHOD_CD,
+    FrontendResponse, OpenParams, MAX_MESSAGE_BYTES, METHODS, METHOD_AGENT_SESSION,
+    METHOD_CAPABILITIES, METHOD_CD,
     METHOD_IDENTIFY, METHOD_OPEN, METHOD_PING, PROTOCOL_VERSION, SERVER_RESPONSE_ID,
 };
 
@@ -391,6 +393,33 @@ fn route_request(
                 Err((code, message)) => ControlResponse::failure(request.id, code, message),
             }
         }
+        METHOD_AGENT_SESSION => {
+            let params: AgentSessionParams = match serde_json::from_value(request.params.clone())
+            {
+                Ok(params) => params,
+                Err(error) => {
+                    return ControlResponse::failure(
+                        request.id,
+                        "invalid_params",
+                        format!("invalid agent-session parameters: {error}"),
+                    );
+                }
+            };
+            match validate_agent_session(params, &request.caller) {
+                Ok(params) => match serde_json::to_value(params) {
+                    Ok(params) => {
+                        request.params = params;
+                        forward_to_frontend(request, app, state)
+                    }
+                    Err(error) => ControlResponse::failure(
+                        request.id,
+                        "internal_error",
+                        format!("serialize agent-session parameters: {error}"),
+                    ),
+                },
+                Err((code, message)) => ControlResponse::failure(request.id, code, message),
+            }
+        }
         _ => ControlResponse::failure(request.id, "unknown_method", "unknown control method"),
     }
 }
@@ -409,6 +438,40 @@ fn validate_cd_params(
 ) -> Result<CdParams, (&'static str, String)> {
     let registry = registry_state(app)?;
     validate_cd_target(params, &registry)
+}
+
+// A session belongs to one pane, so a caller without pane context has nothing
+// to link it to and must not fall back to whatever the user is looking at.
+fn validate_agent_session(
+    mut params: AgentSessionParams,
+    caller: &CallerContext,
+) -> Result<AgentSessionParams, (&'static str, String)> {
+    if caller.pane_id.is_none() {
+        return Err((
+            "pane_required",
+            "agent-session must be sent from a Terax pane".to_string(),
+        ));
+    }
+    if params.agent != "claude" {
+        return Err((
+            "unsupported_agent",
+            format!("session tracking is not supported for {}", params.agent),
+        ));
+    }
+    if !valid_agent_session_id(&params.session_id) {
+        return Err((
+            "invalid_params",
+            "session id must be 1-128 letters, digits or dashes".to_string(),
+        ));
+    }
+    if params
+        .source
+        .as_deref()
+        .is_some_and(|source| !valid_agent_session_source(source))
+    {
+        params.source = None;
+    }
+    Ok(params)
 }
 
 fn registry_state(
@@ -1060,6 +1123,52 @@ mod tests {
             .expect("accept authorized root");
 
         assert_eq!(params.path, fs::to_canon(&root));
+    }
+
+    fn agent_session(session_id: &str, source: Option<&str>) -> AgentSessionParams {
+        AgentSessionParams {
+            agent: "claude".into(),
+            session_id: session_id.into(),
+            source: source.map(Into::into),
+        }
+    }
+
+    #[test]
+    fn agent_session_requires_a_caller_pane() {
+        let error = validate_agent_session(agent_session("abc-1", None), &CallerContext::default())
+            .expect_err("reject a caller without a pane");
+        assert_eq!(error.0, "pane_required");
+    }
+
+    #[test]
+    fn agent_session_rejects_unknown_agents_and_unsafe_ids() {
+        let pane = CallerContext { pane_id: Some(4) };
+        let mut other = agent_session("abc-1", None);
+        other.agent = "codex".into();
+        assert_eq!(
+            validate_agent_session(other, &pane).expect_err("reject").0,
+            "unsupported_agent"
+        );
+        for id in ["", "a;b", "$(id)", "a b", "a\nb"] {
+            assert_eq!(
+                validate_agent_session(agent_session(id, None), &pane)
+                    .expect_err("reject id")
+                    .0,
+                "invalid_params",
+                "{id:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn agent_session_drops_an_unknown_source_but_keeps_the_session() {
+        let pane = CallerContext { pane_id: Some(4) };
+        let params = validate_agent_session(agent_session("abc-1", Some("bogus")), &pane)
+            .expect("accept session");
+        assert_eq!(params.source, None);
+        let params = validate_agent_session(agent_session("abc-1", Some("clear")), &pane)
+            .expect("accept session");
+        assert_eq!(params.source.as_deref(), Some("clear"));
     }
 
     #[test]

@@ -9,6 +9,8 @@ export {
   type OpenFileAtPayload,
 } from "./lib/openFileAt";
 export {
+  type ClaudeSessionLink,
+  findLeaf,
   findLeafCwd,
   hasLeaf,
   isLeaf,
