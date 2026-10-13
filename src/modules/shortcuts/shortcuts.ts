@@ -31,6 +31,7 @@ export type ShortcutId =
   | "pane.source"
   | "terminal.clear"
   | "terminal.toggleInput"
+  | "terminal.copyOneLine"
   | "blocks.prev"
   | "blocks.next"
   | "search.focus"
@@ -211,6 +212,17 @@ export const SHORTCUTS: Shortcut[] = [
     label: "Toggle Shell / AI input",
     group: "Terminal",
     defaultBindings: [{ [MOD_PROP]: true, key: "u" }],
+  },
+  {
+    id: "terminal.copyOneLine",
+    label: "Copy selection as one line",
+    group: "Terminal",
+    // Ctrl+Shift+C is plain copy off macOS, so the Alt variant takes its place.
+    defaultBindings: [
+      IS_MAC
+        ? { meta: true, shift: true, key: "c" }
+        : { ctrl: true, alt: true, key: "c" },
+    ],
   },
   {
     id: "blocks.prev",

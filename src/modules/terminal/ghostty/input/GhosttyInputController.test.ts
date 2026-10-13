@@ -109,6 +109,14 @@ describe("GhosttyInputController", () => {
           input.dispatchEvent(copy);
           expect(copy.defaultPrevented).toBe(true);
           expect(onCopy).toHaveBeenCalledOnce();
+          const oneLineCopy = keyboardEvent({
+            key: "C",
+            code: "KeyC",
+            metaKey: true,
+            shiftKey: true,
+          });
+          input.dispatchEvent(oneLineCopy);
+          expect(onCopy).toHaveBeenCalledOnce();
           expect(onData).not.toHaveBeenCalled();
           for (const [key, sequence] of [
             ["ArrowLeft", "\x01"],

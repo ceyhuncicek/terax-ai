@@ -69,6 +69,10 @@ platforms. An image-only clipboard carries no text, so the paste shortcut and th
 webview paste event fall back to `clipboard_read_image_to_temp` and bracketed-paste
 the temp PNG path it returns, the same path-as-attachment route file drops use so a
 CLI agent resolves it to an image. Text pastes never make that second call.
+`terminal.copyOneLine` (Cmd+Shift+C on macOS, Ctrl+Alt+C elsewhere, since
+Ctrl+Shift+C is plain copy there) copies the selection through the pure
+`joinSelectionToSingleLine`, which rejoins lines a TUI hard-wrapped. It only
+claims the key in a focused terminal with a selection, and never under AltGr.
 Context clicks expose the selected text through the input element to
 restore the webview's native text menu; no persistent DOM scrollback is maintained.
 Unclaimed macOS Command shortcuts reach the native menu after explicit clipboard,

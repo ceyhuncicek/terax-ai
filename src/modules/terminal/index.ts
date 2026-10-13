@@ -3,6 +3,7 @@ export {
   tabAgentStatus,
   useAgentActivityStore,
 } from "./lib/agentActivity";
+export { joinSelectionToSingleLine } from "./lib/joinSelectionToSingleLine";
 export {
   fileLinkOpenPayload,
   OPEN_FILE_AT_EVENT,
@@ -20,6 +21,7 @@ export {
   type PaneNode,
   type SplitDir,
 } from "./lib/panes";
+export { writeTerminalClipboard } from "./lib/terminalClipboard";
 export {
   clearFocusedTerminal,
   disposeSession,

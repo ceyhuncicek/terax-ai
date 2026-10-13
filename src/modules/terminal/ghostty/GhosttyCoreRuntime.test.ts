@@ -586,6 +586,27 @@ describe("GhosttyCoreRuntime", () => {
     model.dispose();
   });
 
+  it("keeps a space that lands at a soft-wrap boundary", async () => {
+    const runtime = new GhosttyCoreRuntime(() =>
+      TeraxGhostty.loadBytes(wasmBytes.slice(0)),
+    );
+    const model = await runtime.createModel({
+      leafId: 21,
+      cols: 5,
+      rows: 3,
+    });
+    model.write(new TextEncoder().encode("abcd efghi\r\nxy   "));
+
+    expect(
+      model.selectionText({
+        anchor: { line: 0, column: 0 },
+        focus: { line: 2, column: 4 },
+        rectangular: false,
+      }),
+    ).toBe("abcd efghi\nxy");
+    model.dispose();
+  });
+
   it("clears history while preserving the active cursor line", async () => {
     const runtime = new GhosttyCoreRuntime(() =>
       TeraxGhostty.loadBytes(wasmBytes.slice(0)),

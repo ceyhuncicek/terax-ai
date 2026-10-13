@@ -92,6 +92,7 @@ import {
   findLeafCwd,
   hasLeaf,
   isTerminalSurfaceTarget,
+  joinSelectionToSingleLine,
   leafIds,
   navigateFocusedBlocks,
   OPEN_FILE_AT_EVENT,
@@ -102,6 +103,7 @@ import {
   useAgentActivityStore,
   useTerminalFileDrop,
   whenSessionReady,
+  writeTerminalClipboard,
   writeToSession,
 } from "@/modules/terminal";
 import type { TerminalSearchController } from "@/modules/terminal/search/TerminalSearchController";
@@ -961,6 +963,10 @@ export default function App() {
       "terminal.clear": () => {
         clearFocusedTerminal();
       },
+      "terminal.copyOneLine": () => {
+        const line = joinSelectionToSingleLine(captureActiveSelection() ?? "");
+        if (line) void writeTerminalClipboard(line).catch(() => {});
+      },
       "terminal.toggleInput": () =>
         window.dispatchEvent(new CustomEvent(TOGGLE_BLOCK_INPUT_EVENT)),
       "blocks.prev": () => navigateFocusedBlocks(-1),
@@ -1022,6 +1028,7 @@ export default function App() {
       togglePanelAndFocus,
       toggleMini,
       onAskFromSelection,
+      captureActiveSelection,
       toggleSidebar,
       toggleExplorerFocus,
       toggleHiddenFiles,
@@ -1055,6 +1062,14 @@ export default function App() {
         if (!inTerminal) return false;
         const sel = captureActiveSelection();
         return !sel?.trim();
+      }
+      if (id === "terminal.copyOneLine") {
+        // AltGr reports Ctrl+Alt on Windows and must keep typing characters.
+        if (e.getModifierState("AltGraph")) return true;
+        const target =
+          (e.target as HTMLElement | null) ?? document.activeElement;
+        if (!isTerminalSurfaceTarget(target)) return true;
+        return !captureActiveSelection()?.trim();
       }
       if (id === "terminal.clear") {
         // Only intercept ⌘K while a terminal is focused; elsewhere let the key

@@ -666,8 +666,13 @@ function modifiers(event: KeyboardEvent): Mods {
 
 function isCopyShortcut(event: KeyboardEvent, isMac: boolean): boolean {
   if (isMac) {
+    // Cmd+Shift+C is the app-level one-line copy, not plain copy.
     return (
-      event.metaKey && !event.ctrlKey && !event.altKey && event.code === "KeyC"
+      event.metaKey &&
+      !event.shiftKey &&
+      !event.ctrlKey &&
+      !event.altKey &&
+      event.code === "KeyC"
     );
   }
   return (

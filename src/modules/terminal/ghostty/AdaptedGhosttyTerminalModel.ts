@@ -613,14 +613,14 @@ export class AdaptedGhosttyTerminalModel implements GhosttyTerminalModelApi {
       for (let column = startColumn; column <= endColumn; column += 1) {
         value += snapshot.cells[column] ?? "";
       }
-      const text = value.trimEnd();
+      // Trailing blanks of a soft-wrapped row are real spaces of the logical line.
       if (lines.length > 0 && !selection.rectangular && snapshot.wrapped) {
-        lines[lines.length - 1] += text;
+        lines[lines.length - 1] += value;
       } else {
-        lines.push(text);
+        lines.push(value);
       }
     }
-    return lines.join("\n");
+    return lines.map((line) => line.trimEnd()).join("\n");
   }
 
   setSelection(selection: TerminalBufferSelection | null): void {
