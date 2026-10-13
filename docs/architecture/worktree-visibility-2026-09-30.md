@@ -2,6 +2,8 @@
 
 Scope: why the explorer and source control panel keep showing the main checkout when an agent CLI creates and works inside a git worktree, and what the options are. Written 2026-09-30 against `72cbd26`. Everything here comes from reading the source, not from running the app.
 
+Status, 2026-10-13: option B below was built (a `terax cd` control verb plus a `CwdChanged` hook) and then removed because it was not useful in practice. The view again does not follow an agent into a worktree, as this document describes. Hook installs prune the old `CwdChanged` hook.
+
 ## The short version
 
 Terax has no project root. The explorer, the source control panel, the window title, and the in-app AI all read one derived value: the cwd of the terminal pane you currently have focused. That value arrives from the shell itself, as an OSC 7 escape sequence printed once per prompt.

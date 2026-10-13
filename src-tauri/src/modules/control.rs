@@ -12,9 +12,8 @@ use serde_json::{json, Value};
 use tauri::{Emitter, Manager};
 use terax_control_protocol::{
     valid_agent_session_id, valid_agent_session_source, AgentSessionParams, CallerContext,
-    CdParams, ControlDescriptor, ControlRequest, ControlResponse, FrontendRequest,
-    FrontendResponse, OpenParams, MAX_MESSAGE_BYTES, METHODS, METHOD_AGENT_SESSION,
-    METHOD_CAPABILITIES, METHOD_CD,
+    ControlDescriptor, ControlRequest, ControlResponse, FrontendRequest, FrontendResponse,
+    OpenParams, MAX_MESSAGE_BYTES, METHODS, METHOD_AGENT_SESSION, METHOD_CAPABILITIES,
     METHOD_IDENTIFY, METHOD_OPEN, METHOD_PING, PROTOCOL_VERSION, SERVER_RESPONSE_ID,
 };
 
@@ -367,32 +366,6 @@ fn route_request(
                 Err((code, message)) => ControlResponse::failure(request.id, code, message),
             }
         }
-        METHOD_CD => {
-            let params: CdParams = match serde_json::from_value(request.params.clone()) {
-                Ok(params) => params,
-                Err(error) => {
-                    return ControlResponse::failure(
-                        request.id,
-                        "invalid_params",
-                        format!("invalid cd parameters: {error}"),
-                    );
-                }
-            };
-            match validate_cd_params(params, app) {
-                Ok(params) => match serde_json::to_value(params) {
-                    Ok(params) => {
-                        request.params = params;
-                        forward_to_frontend(request, app, state)
-                    }
-                    Err(error) => ControlResponse::failure(
-                        request.id,
-                        "internal_error",
-                        format!("serialize cd parameters: {error}"),
-                    ),
-                },
-                Err((code, message)) => ControlResponse::failure(request.id, code, message),
-            }
-        }
         METHOD_AGENT_SESSION => {
             let params: AgentSessionParams = match serde_json::from_value(request.params.clone())
             {
@@ -428,16 +401,18 @@ fn validate_open_params(
     params: OpenParams,
     app: &tauri::AppHandle,
 ) -> Result<OpenParams, (&'static str, String)> {
-    let registry = registry_state(app)?;
-    validate_open_target(params, &registry)
-}
-
-fn validate_cd_params(
-    params: CdParams,
-    app: &tauri::AppHandle,
-) -> Result<CdParams, (&'static str, String)> {
-    let registry = registry_state(app)?;
-    validate_cd_target(params, &registry)
+    let (mut params, canonical) = normalize_open_target(params)?;
+    let registry = app
+        .try_state::<workspace::WorkspaceRegistry>()
+        .ok_or_else(|| {
+            (
+                "internal_error",
+                "workspace registry is unavailable".to_string(),
+            )
+        })?;
+    require_authorized_open_target(&registry, &canonical)?;
+    params.path = fs::to_canon(canonical);
+    Ok(params)
 }
 
 // A session belongs to one pane, so a caller without pane context has nothing
@@ -474,41 +449,7 @@ fn validate_agent_session(
     Ok(params)
 }
 
-fn registry_state(
-    app: &tauri::AppHandle,
-) -> Result<tauri::State<'_, workspace::WorkspaceRegistry>, (&'static str, String)> {
-    app.try_state::<workspace::WorkspaceRegistry>()
-        .ok_or_else(|| {
-            (
-                "internal_error",
-                "workspace registry is unavailable".to_string(),
-            )
-        })
-}
-
-// Registry-taking half, split out of the AppHandle wrapper so a test can prove
-// the check is the read-only one and never widens the authorized roots.
-fn validate_open_target(
-    params: OpenParams,
-    registry: &workspace::WorkspaceRegistry,
-) -> Result<OpenParams, (&'static str, String)> {
-    let (mut params, canonical) = normalize_open_target(params)?;
-    require_authorized_target(registry, &canonical)?;
-    params.path = fs::to_canon(canonical);
-    Ok(params)
-}
-
-fn validate_cd_target(
-    params: CdParams,
-    registry: &workspace::WorkspaceRegistry,
-) -> Result<CdParams, (&'static str, String)> {
-    let (mut params, canonical) = normalize_cd_target(params)?;
-    require_authorized_target(registry, &canonical)?;
-    params.path = fs::to_canon(canonical);
-    Ok(params)
-}
-
-fn require_authorized_target(
+fn require_authorized_open_target(
     registry: &workspace::WorkspaceRegistry,
     canonical: &Path,
 ) -> Result<(), (&'static str, String)> {
@@ -547,39 +488,6 @@ fn normalize_open_target(
         return Err((
             "not_a_file",
             format!("path is not a regular file: {}", canonical.display()),
-        ));
-    }
-    Ok((params, canonical))
-}
-
-// AppHandle-free so the directory rules stay unit testable, mirroring
-// normalize_open_target.
-fn normalize_cd_target(params: CdParams) -> Result<(CdParams, PathBuf), (&'static str, String)> {
-    if params.path.is_empty() || params.path.len() > 16 * 1024 {
-        return Err((
-            "invalid_params",
-            "path must contain 1-16384 bytes".to_string(),
-        ));
-    }
-    let canonical = std::fs::canonicalize(&params.path)
-        .map_err(|error| ("path_not_found", format!("cannot resolve path: {error}")))?;
-    let metadata = std::fs::metadata(&canonical)
-        .map_err(|error| ("path_not_found", format!("cannot stat path: {error}")))?;
-    if !metadata.is_dir() {
-        return Err((
-            "not_a_directory",
-            format!("path is not a directory: {}", canonical.display()),
-        ));
-    }
-    // A linked worktree's .git is a file, so only presence matters. metadata
-    // follows symlinks, which rejects a dangling .git link.
-    if std::fs::metadata(canonical.join(".git")).is_err() {
-        return Err((
-            "not_a_project_root",
-            format!(
-                "directory is not a git project root: {}",
-                canonical.display()
-            ),
         ));
     }
     Ok((params, canonical))
@@ -933,10 +841,6 @@ mod tests {
         }
     }
 
-    fn cd_params(path: String) -> CdParams {
-        CdParams { path, focus: true }
-    }
-
     fn read_error(bytes: Vec<u8>) -> ReadRequestError {
         match read_request(&mut Cursor::new(bytes)) {
             Ok(_) => panic!("request was unexpectedly accepted"),
@@ -1017,112 +921,11 @@ mod tests {
             .authorize(authorized.path())
             .expect("authorize workspace");
 
-        let error = validate_open_target(
-            open_params(outside_file.to_string_lossy().into_owned()),
-            &registry,
-        )
-        .expect_err("reject outside file");
+        let error = require_authorized_open_target(&registry, &outside_file)
+            .expect_err("reject outside file");
 
         assert_eq!(error.0, "path_not_accessible");
         assert!(!registry.is_authorized(&outside_file));
-    }
-
-    #[test]
-    fn cd_rejects_an_empty_or_oversized_path() {
-        let error = normalize_cd_target(cd_params(String::new())).expect_err("reject empty");
-        assert_eq!(error.0, "invalid_params");
-
-        let error = normalize_cd_target(cd_params("x".repeat(16 * 1024 + 1)))
-            .expect_err("reject oversized path");
-        assert_eq!(error.0, "invalid_params");
-    }
-
-    #[test]
-    fn cd_rejects_a_file() {
-        let temp = tempfile::tempdir().expect("temp directory");
-        let file = temp.path().join("main.rs");
-        std::fs::write(&file, b"fn main() {}\n").expect("write file");
-
-        let error = normalize_cd_target(cd_params(file.to_string_lossy().into_owned()))
-            .expect_err("reject file");
-
-        assert_eq!(error.0, "not_a_directory");
-    }
-
-    #[test]
-    fn cd_rejects_a_directory_without_a_git_entry() {
-        let temp = tempfile::tempdir().expect("temp directory");
-
-        let error = normalize_cd_target(cd_params(temp.path().to_string_lossy().into_owned()))
-            .expect_err("reject plain directory");
-
-        assert_eq!(error.0, "not_a_project_root");
-    }
-
-    #[test]
-    fn cd_accepts_a_clone_root() {
-        let temp = tempfile::tempdir().expect("temp directory");
-        std::fs::create_dir(temp.path().join(".git")).expect("create git directory");
-
-        let (_, canonical) =
-            normalize_cd_target(cd_params(temp.path().to_string_lossy().into_owned()))
-                .expect("accept clone root");
-
-        assert_eq!(
-            canonical,
-            std::fs::canonicalize(temp.path()).expect("canonical temp dir")
-        );
-    }
-
-    #[test]
-    fn cd_accepts_a_linked_worktree_root() {
-        let temp = tempfile::tempdir().expect("temp directory");
-        std::fs::write(temp.path().join(".git"), b"gitdir: /some/path\n").expect("write git file");
-
-        let (_, canonical) =
-            normalize_cd_target(cd_params(temp.path().to_string_lossy().into_owned()))
-                .expect("accept linked worktree root");
-
-        assert_eq!(
-            canonical,
-            std::fs::canonicalize(temp.path()).expect("canonical temp dir")
-        );
-    }
-
-    #[test]
-    fn cd_authorization_is_read_only() {
-        let authorized = tempfile::tempdir().expect("authorized directory");
-        let outside = tempfile::tempdir().expect("outside directory");
-        std::fs::create_dir(outside.path().join(".git")).expect("create git directory");
-        let outside_root = std::fs::canonicalize(outside.path()).expect("canonical outside dir");
-        let registry = workspace::WorkspaceRegistry::default();
-        registry
-            .authorize(authorized.path())
-            .expect("authorize workspace");
-
-        let error = validate_cd_target(
-            cd_params(outside_root.to_string_lossy().into_owned()),
-            &registry,
-        )
-        .expect_err("reject outside root");
-
-        assert_eq!(error.0, "path_not_accessible");
-        assert!(!registry.is_authorized(&outside_root));
-    }
-
-    #[test]
-    fn cd_accepts_an_authorized_root() {
-        let authorized = tempfile::tempdir().expect("authorized directory");
-        std::fs::create_dir(authorized.path().join(".git")).expect("create git directory");
-        let registry = workspace::WorkspaceRegistry::default();
-        let root = registry
-            .authorize(authorized.path())
-            .expect("authorize workspace");
-
-        let params = validate_cd_target(cd_params(root.to_string_lossy().into_owned()), &registry)
-            .expect("accept authorized root");
-
-        assert_eq!(params.path, fs::to_canon(&root));
     }
 
     fn agent_session(session_id: &str, source: Option<&str>) -> AgentSessionParams {

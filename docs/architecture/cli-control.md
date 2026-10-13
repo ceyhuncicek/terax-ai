@@ -14,7 +14,7 @@ terax capabilities [--json]
 terax identify [--json]
 ```
 
-Two verbs exist only for the Claude Code hooks Terax installs and stay silent on stdout with exit status 0 whatever happens: `terax cd --terax-follow-hook` (`CwdChanged`) and `terax agent-session --terax-session-hook` (`SessionStart`). The latter needs `TERAX_PANE_ID`, takes the session id from the hook payload, and accepts only `[A-Za-z0-9-]` ids of at most 128 bytes because the id is later typed into a shell to resume the session. Rust rejects `agent-session` without a caller pane rather than falling back to the active one.
+One verb exists only for the Claude Code hook Terax installs and stays silent on stdout with exit status 0 whatever happens: `terax agent-session --terax-session-hook` (`SessionStart`). It needs `TERAX_PANE_ID`, takes the session id from the hook payload, and accepts only `[A-Za-z0-9-]` ids of at most 128 bytes because the id is later typed into a shell to resume the session. Rust rejects `agent-session` without a caller pane rather than falling back to the active one.
 
 The app must already be running. A command launched inside a Terax pane targets that pane's space, even if another space or tab has UI focus. An external client without pane context falls back to the active UI context.
 

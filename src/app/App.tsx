@@ -165,7 +165,6 @@ export default function App() {
     newAgentGroupTab,
     newPrivateTab,
     openFileTab,
-    openDirectoryTab,
     pinTab,
     newPreviewTab,
     newMarkdownTab,
@@ -666,7 +665,6 @@ export default function App() {
       const hooksReady = launcher.supportsHooks
         ? invoke("agent_enable_hooks", {
             agent: request.agent,
-            follow: usePreferencesStore.getState().agentFollowWorktrees,
           }).catch((error) => {
             console.warn(
               `[terax] could not enable ${request.agent} notifications:`,
@@ -1414,26 +1412,6 @@ export default function App() {
     [openFileTab],
   );
 
-  // No workspaceAuthorize call here: the backend already required an authorized
-  // target, and the permissive authorizer would widen the root set.
-  const openControlDirectory = useCallback(
-    ({
-      path,
-      spaceId,
-      foreground,
-    }: {
-      path: string;
-      spaceId: string;
-      foreground: boolean;
-    }) => {
-      if (foreground && useSpaces.getState().activeId !== spaceId) {
-        useSpaces.getState().setActive(spaceId);
-      }
-      return openDirectoryTab(path, { spaceId, activate: foreground });
-    },
-    [openDirectoryTab],
-  );
-
   // Declared here rather than beside the terax:open-file listener because it
   // routes through openControlFile, which is defined just above.
   useEffect(() => {
@@ -1472,7 +1450,6 @@ export default function App() {
     activeTabIdRef: activeIdRef,
     activeSpaceIdRef,
     onOpen: openControlFile,
-    onCd: openControlDirectory,
     onAgentSession: recordClaudeSession,
   });
 

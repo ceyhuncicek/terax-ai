@@ -334,7 +334,6 @@ pub fn run() {
             agent::agent_enable_hooks,
             agent::agent_upgrade_hooks,
             agent::agent_hooks_status,
-            agent::agent_follow_hook_status,
             secrets::secrets_get,
             secrets::secrets_set,
             secrets::secrets_delete,

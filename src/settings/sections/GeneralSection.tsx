@@ -10,17 +10,12 @@ import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/utils";
 import {
-  type FollowHookStatus,
-  reconcileFollowHook,
-} from "@/modules/agents/lib/followHook";
-import {
   type OsNotificationResult,
   testAgentOsNotification,
 } from "@/modules/agents/lib/notify";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import type { ThemePref } from "@/modules/settings/store";
 import {
-  setAgentFollowWorktrees,
   setAgentNotificationSound,
   setAgentNotifications,
   setAutostart,
@@ -94,26 +89,6 @@ type NotificationTestState =
   | "waiting"
   | "sending";
 
-const FOLLOW_WORKTREES_DESCRIPTION =
-  "Writes a CwdChanged hook to ~/.claude/settings.json so the explorer and source control move with Claude Code when it works in a worktree. Turning this off removes the hook.";
-
-function readFollowHookStatus(set: (installed: boolean | null) => void) {
-  return invoke<boolean>("agent_follow_hook_status", { agent: "claude" })
-    .then(set)
-    .catch(() => set(null));
-}
-
-function followHookNote(status: FollowHookStatus): string {
-  switch (status) {
-    case "missing":
-      return " The hook is not in the file right now.";
-    case "stale":
-      return " The hook is still in the file.";
-    default:
-      return "";
-  }
-}
-
 export function GeneralSection() {
   const { mode, setMode } = useTheme();
 
@@ -154,17 +129,6 @@ export function GeneralSection() {
   const agentNotificationSound = usePreferencesStore(
     (s) => s.agentNotificationSound,
   );
-  const agentFollowWorktrees = usePreferencesStore(
-    (s) => s.agentFollowWorktrees,
-  );
-  // null while unknown: the preference then stands on its own.
-  const [followHookInstalled, setFollowHookInstalled] = useState<
-    boolean | null
-  >(null);
-  const followHook = reconcileFollowHook(
-    agentFollowWorktrees,
-    followHookInstalled,
-  );
   const [notificationTest, setNotificationTest] =
     useState<NotificationTestState>("idle");
   const notificationTestPending =
@@ -195,10 +159,6 @@ export function GeneralSection() {
   }, []);
 
   useEffect(() => {
-    void readFollowHookStatus(setFollowHookInstalled);
-  }, []);
-
-  useEffect(() => {
     void invoke<ShellInfo[]>("pty_list_shells")
       .then(setShells)
       .catch(() => {});
@@ -206,20 +166,6 @@ export function GeneralSection() {
       .then(setWslDistros)
       .catch(() => {});
   }, []);
-
-  // Write or remove the hook now rather than at the next agent launch, so the
-  // file matches the switch the moment it moves.
-  const onToggleFollowWorktrees = async (next: boolean) => {
-    try {
-      await invoke("agent_enable_hooks", { agent: "claude", follow: next });
-      setFollowHookInstalled(next);
-      await setAgentFollowWorktrees(next);
-    } catch (e) {
-      console.error("follow hook toggle failed", e);
-      // A failed write leaves the file in either state, so ask it again.
-      void readFollowHookStatus(setFollowHookInstalled);
-    }
-  };
 
   const onToggleAutostart = async (next: boolean) => {
     try {
@@ -610,17 +556,6 @@ export function GeneralSection() {
             checked={agentNotificationSound}
             disabled={!agentNotifications || notificationTestPending}
             onCheckedChange={(v) => void setAgentNotificationSound(v)}
-          />
-        </SettingRow>
-        <SettingRow
-          title="Follow agents into worktrees"
-          description={
-            FOLLOW_WORKTREES_DESCRIPTION + followHookNote(followHook.status)
-          }
-        >
-          <Switch
-            checked={followHook.checked}
-            onCheckedChange={(v) => void onToggleFollowWorktrees(v)}
           />
         </SettingRow>
       </div>

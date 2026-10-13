@@ -5,7 +5,6 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { cn } from "@/lib/utils";
-import { usePreferencesStore } from "@/modules/settings/preferences";
 import {
   ArrowDown01Icon,
   ArrowUp01Icon,
@@ -181,9 +180,6 @@ export function NotificationBell({ onActivate, onActivateLocal }: Props) {
   const sessions = useAgentStore((s) => s.sessions);
   const localAgent = useAgentStore((s) => s.localAgent);
   const notifications = useAgentStore((s) => s.notifications);
-  const agentFollowWorktrees = usePreferencesStore(
-    (s) => s.agentFollowWorktrees,
-  );
   const markAllRead = useAgentStore((s) => s.markAllRead);
   const clearNotifications = useAgentStore((s) => s.clearNotifications);
 
@@ -219,10 +215,7 @@ export function NotificationBell({ onActivate, onActivateLocal }: Props) {
   const enableHooks = async (id: string) => {
     setInstalling(id);
     try {
-      await invoke("agent_enable_hooks", {
-        agent: id,
-        follow: agentFollowWorktrees,
-      });
+      await invoke("agent_enable_hooks", { agent: id });
       setHooks((h) => ({ ...h, [id]: true }));
     } catch {
       setHooks((h) => ({ ...h, [id]: false }));

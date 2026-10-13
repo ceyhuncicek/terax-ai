@@ -2,7 +2,7 @@ use std::env;
 use std::ffi::OsString;
 use std::io::{BufRead, BufReader, IsTerminal, Read, Write};
 use std::net::{SocketAddr, TcpStream};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -10,9 +10,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use serde_json::{json, Value};
 use terax_control_protocol::{
     valid_agent_session_id, valid_agent_session_source, AgentSessionParams, CallerContext,
-    CdParams, ControlDescriptor, ControlRequest, ControlResponse, OpenParams, MAX_MESSAGE_BYTES,
-    METHOD_AGENT_SESSION, METHOD_CAPABILITIES, METHOD_CD, METHOD_IDENTIFY, METHOD_OPEN,
-    METHOD_PING, PROTOCOL_VERSION, SERVER_RESPONSE_ID,
+    ControlDescriptor, ControlRequest, ControlResponse, OpenParams, MAX_MESSAGE_BYTES,
+    METHOD_AGENT_SESSION, METHOD_CAPABILITIES, METHOD_IDENTIFY, METHOD_OPEN, METHOD_PING,
+    PROTOCOL_VERSION, SERVER_RESPONSE_ID,
 };
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
@@ -24,7 +24,6 @@ const EXIT_REQUEST: u8 = 5;
 // A hook payload is a few hundred bytes, so cap the read rather than let a wedged
 // or hostile producer make the CLI buffer without end.
 const HOOK_INPUT_LIMIT: u64 = 1024 * 1024;
-const HOOK_FLAG: &str = "--terax-follow-hook";
 const SESSION_HOOK_FLAG: &str = "--terax-session-hook";
 static REQUEST_COUNTER: AtomicU64 = AtomicU64::new(1);
 
@@ -149,7 +148,6 @@ fn parse_args(mut args: Vec<OsString>) -> Result<Config, CliError> {
         Some("capabilities") => request_without_params(args, METHOD_CAPABILITIES)?,
         Some("identify") => request_without_params(args, METHOD_IDENTIFY)?,
         Some("open") => parse_open(args)?,
-        Some("cd") => parse_cd(args)?,
         Some("agent-session") => parse_agent_session(args)?,
         Some("--") => {
             args.insert(0, command);
@@ -194,7 +192,6 @@ fn hook_mode(args: &[OsString]) -> bool {
     // Each hook flag belongs to its own verb, so the flag on any other verb stays a
     // visible usage error rather than a command that silently does nothing.
     match arguments.next() {
-        Some(verb) if verb == "cd" => arguments.any(|arg| arg == HOOK_FLAG),
         Some(verb) if verb == "agent-session" => arguments.any(|arg| arg == SESSION_HOOK_FLAG),
         _ => false,
     }
@@ -292,85 +289,6 @@ fn parse_open(args: Vec<OsString>) -> Result<Action, CliError> {
     })
 }
 
-fn parse_cd(args: Vec<OsString>) -> Result<Action, CliError> {
-    let mut path: Option<OsString> = None;
-    let mut focus = true;
-    let mut from_hook = false;
-    let mut options = true;
-    let mut index = 0;
-    while index < args.len() {
-        let arg = &args[index];
-        match arg.to_str() {
-            Some("--") if options => options = false,
-            Some("--no-focus") if options => focus = false,
-            Some(HOOK_FLAG) if options => from_hook = true,
-            Some(value) if options && value.starts_with('-') => {
-                return Err(usage_error(format!("unknown cd option '{value}'")));
-            }
-            _ if path.is_none() => path = Some(arg.clone()),
-            _ => return Err(usage_error("cd accepts exactly one directory")),
-        }
-        index += 1;
-    }
-    if from_hook && path.is_some() {
-        return Err(usage_error(
-            "cd takes its directory from the hook payload or the command line, not both",
-        ));
-    }
-
-    let canonical = if from_hook {
-        // Anything the payload cannot be trusted to name is not ours to act on, and
-        // a hook has no way to report that, so stay silent instead of erroring.
-        let Some(target) = read_hook_cwd() else {
-            return Ok(Action::Noop);
-        };
-        let Ok(canonical) = std::fs::canonicalize(PathBuf::from(target)) else {
-            return Ok(Action::Noop);
-        };
-        // The agent walks around inside one checkout constantly; only a move to
-        // another repo or worktree is worth moving the view for.
-        if !is_project_root(&canonical) {
-            return Ok(Action::Noop);
-        }
-        canonical
-    } else {
-        let path = path.ok_or_else(|| usage_error("cd requires a directory"))?;
-        let canonical = std::fs::canonicalize(PathBuf::from(path)).map_err(|error| {
-            CliError::new(
-                "path_not_found",
-                format!("cannot resolve directory: {error}"),
-                EXIT_USAGE,
-            )
-        })?;
-        if !canonical.is_dir() {
-            return Err(CliError::new(
-                "not_a_directory",
-                format!("path is not a directory: {}", canonical.display()),
-                EXIT_USAGE,
-            ));
-        }
-        canonical
-    };
-    let path = canonical.into_os_string().into_string().map_err(|_| {
-        CliError::new(
-            "non_utf8_path",
-            "Terax cannot follow a path that is not valid UTF-8",
-            EXIT_USAGE,
-        )
-    })?;
-    let params = serde_json::to_value(CdParams { path, focus }).map_err(|error| {
-        CliError::new(
-            "serialization_error",
-            format!("could not encode cd request: {error}"),
-            EXIT_PROTOCOL,
-        )
-    })?;
-    Ok(Action::Request {
-        method: METHOD_CD,
-        params,
-    })
-}
-
 // Only the hook can name the session, so there is no hand-typed form of this verb.
 fn parse_agent_session(args: Vec<OsString>) -> Result<Action, CliError> {
     if args.len() != 1 || args[0] != SESSION_HOOK_FLAG {
@@ -434,31 +352,6 @@ fn read_hook_input() -> Option<String> {
         .read_to_string(&mut input)
         .ok()?;
     Some(input)
-}
-
-fn read_hook_cwd() -> Option<String> {
-    hook_cwd_from_json(&read_hook_input()?)
-}
-
-fn hook_cwd_from_json(input: &str) -> Option<String> {
-    let payload: Value = serde_json::from_str(input).ok()?;
-    if payload.get("hook_event_name").and_then(Value::as_str)? != "CwdChanged" {
-        return None;
-    }
-    let new_cwd = payload.get("new_cwd").and_then(Value::as_str)?;
-    if new_cwd.is_empty() {
-        return None;
-    }
-    if payload.get("old_cwd").and_then(Value::as_str) == Some(new_cwd) {
-        return None;
-    }
-    Some(new_cwd.to_string())
-}
-
-fn is_project_root(dir: &Path) -> bool {
-    // A linked worktree's .git is a file, not a directory, so test for presence only.
-    // metadata follows symlinks, which rejects a dangling .git link.
-    std::fs::metadata(dir.join(".git")).is_ok()
 }
 
 fn usage_error(message: impl Into<String>) -> CliError {
@@ -735,20 +628,6 @@ fn print_result(method: &str, result: Value, as_json: bool) {
                 println!("Opened {path} in Terax");
             }
         }
-        METHOD_CD => {
-            let path = result.get("path").and_then(Value::as_str).unwrap_or("");
-            // A background pane gets a tab but no view switch, so say so rather
-            // than claiming Terax is following the directory.
-            if result
-                .get("activated")
-                .and_then(Value::as_bool)
-                .unwrap_or(false)
-            {
-                println!("Now following {path} in Terax");
-            } else {
-                println!("Terax opened {path} in a background tab");
-            }
-        }
         _ => println!("{result}"),
     }
 }
@@ -756,7 +635,7 @@ fn print_result(method: &str, result: Value, as_json: bool) {
 fn print_help() {
     println!(
         "Terax command line interface\n\n\
-Usage:\n  terax <file> [--line <n>] [--no-focus] [--json]\n  terax open <file> [--line <n>] [--no-focus] [--json]\n  terax cd <dir> [--no-focus] [--json]\n  terax ping [--json]\n  terax capabilities [--json]\n  terax identify [--json]\n  terax --version\n\n\
+Usage:\n  terax <file> [--line <n>] [--no-focus] [--json]\n  terax open <file> [--line <n>] [--no-focus] [--json]\n  terax ping [--json]\n  terax capabilities [--json]\n  terax identify [--json]\n  terax --version\n\n\
 The app must be running. Commands launched in a Terax pane target that pane's space."
     );
 }
@@ -829,123 +708,6 @@ mod tests {
     }
 
     #[test]
-    fn parses_cd_with_a_directory() {
-        let dir = tempfile::tempdir().expect("temp directory");
-        let config =
-            parse_args(vec!["cd".into(), dir.path().as_os_str().to_owned()]).expect("parse cd");
-        let Action::Request { method, params } = config.action else {
-            panic!("expected request action");
-        };
-        assert_eq!(method, METHOD_CD);
-        assert_eq!(params["focus"], true);
-        assert_eq!(
-            params["path"],
-            std::fs::canonicalize(dir.path())
-                .expect("canonical temp dir")
-                .to_string_lossy()
-                .as_ref()
-        );
-    }
-
-    #[test]
-    fn cd_rejects_a_file_path() {
-        let file = tempfile::NamedTempFile::new().expect("temp file");
-        let error = parse_args(vec!["cd".into(), file.path().as_os_str().to_owned()])
-            .expect_err("reject file");
-        assert_eq!(error.code, "not_a_directory");
-        assert_eq!(error.exit, EXIT_USAGE);
-    }
-
-    #[test]
-    fn cd_honours_no_focus() {
-        let dir = tempfile::tempdir().expect("temp directory");
-        let config = parse_args(vec![
-            "cd".into(),
-            dir.path().as_os_str().to_owned(),
-            "--no-focus".into(),
-        ])
-        .expect("parse cd");
-        let Action::Request { params, .. } = config.action else {
-            panic!("expected request action");
-        };
-        assert_eq!(params["focus"], false);
-    }
-
-    #[test]
-    fn cd_without_a_path_is_a_usage_error() {
-        let error = parse_args(args(&["cd"])).expect_err("reject missing directory");
-        assert_eq!(error.code, "usage");
-        assert_eq!(error.message, "cd requires a directory");
-    }
-
-    #[test]
-    fn cd_rejects_from_hook_with_a_path() {
-        let dir = tempfile::tempdir().expect("temp directory");
-        let error = parse_args(vec![
-            "cd".into(),
-            "--terax-follow-hook".into(),
-            dir.path().as_os_str().to_owned(),
-        ])
-        .expect_err("reject a path alongside the hook flag");
-        assert_eq!(error.code, "usage");
-        assert_eq!(error.exit, EXIT_USAGE);
-    }
-
-    #[test]
-    fn hook_mode_belongs_to_the_cd_verb_alone() {
-        assert!(hook_mode(&args(&["cd", "--terax-follow-hook"])));
-        assert!(hook_mode(&args(&["cd", "--json", "--terax-follow-hook"])));
-        assert!(!hook_mode(&args(&["cd"])));
-        assert!(!hook_mode(&args(&["cd", "--", "--terax-follow-hook"])));
-        assert!(!hook_mode(&args(&["--terax-follow-hook"])));
-    }
-
-    #[test]
-    fn the_hook_flag_outside_cd_stays_a_visible_usage_error() {
-        let values = args(&["open", "--terax-follow-hook", "/etc/hosts"]);
-        assert!(!hook_mode(&values));
-        let error = parse_args(values).expect_err("reject the hook flag on open");
-        assert_eq!(error.code, "usage");
-        assert_eq!(error.exit, EXIT_USAGE);
-    }
-
-    #[test]
-    fn hook_payload_reports_the_new_directory() {
-        let payload = r#"{"session_id":"s1","transcript_path":"/t","cwd":"/b",
-            "hook_event_name":"CwdChanged","old_cwd":"/a","new_cwd":"/b"}"#;
-        assert_eq!(hook_cwd_from_json(payload), Some("/b".to_string()));
-    }
-
-    #[test]
-    fn hook_payload_ignores_a_directory_that_did_not_change() {
-        let payload = r#"{"hook_event_name":"CwdChanged","old_cwd":"/a","new_cwd":"/a"}"#;
-        assert_eq!(hook_cwd_from_json(payload), None);
-    }
-
-    #[test]
-    fn hook_payload_ignores_other_events() {
-        let payload = r#"{"hook_event_name":"Stop","old_cwd":"/a","new_cwd":"/b"}"#;
-        assert_eq!(hook_cwd_from_json(payload), None);
-    }
-
-    #[test]
-    fn hook_payload_ignores_anything_unusable() {
-        assert_eq!(hook_cwd_from_json("{"), None);
-        assert_eq!(
-            hook_cwd_from_json(r#"{"hook_event_name":"CwdChanged","old_cwd":"/a"}"#),
-            None
-        );
-        assert_eq!(
-            hook_cwd_from_json(r#"{"hook_event_name":"CwdChanged","new_cwd":""}"#),
-            None
-        );
-        assert_eq!(
-            hook_cwd_from_json(r#"{"hook_event_name":"CwdChanged","new_cwd":42}"#),
-            None
-        );
-    }
-
-    #[test]
     fn session_start_payload_names_the_session() {
         let payload = r#"{"session_id":"2b1f9a4e-6c1d-4f7e-9a3b-0c5d8e7f1a2b",
             "transcript_path":"/home/u/.claude/projects/p/2b1f.jsonl","cwd":"/p",
@@ -1000,57 +762,7 @@ mod tests {
     fn hook_mode_covers_the_session_hook_on_its_own_verb() {
         assert!(hook_mode(&args(&["agent-session", "--terax-session-hook"])));
         assert!(!hook_mode(&args(&["agent-session"])));
-        assert!(!hook_mode(&args(&["cd", "--terax-session-hook"])));
-        assert!(!hook_mode(&args(&["agent-session", "--terax-follow-hook"])));
-    }
-
-    #[test]
-    fn project_root_detection_needs_a_git_entry() {
-        let dir = tempfile::tempdir().expect("temp directory");
-        assert!(!is_project_root(dir.path()));
-        std::fs::create_dir(dir.path().join(".git")).expect("git directory");
-        assert!(is_project_root(dir.path()));
-    }
-
-    #[test]
-    fn project_root_detection_accepts_a_linked_worktree() {
-        let dir = tempfile::tempdir().expect("temp directory");
-        let main = dir.path().join("main");
-        std::fs::create_dir(&main).expect("main checkout");
-        if !git(&main, &["init", "-q"]) {
-            // No usable git here, so there is no worktree to look at.
-            return;
-        }
-        std::fs::write(main.join("README"), "terax").expect("seed file");
-        assert!(git(&main, &["add", "README"]), "stage the seed file");
-        assert!(git(&main, &["commit", "-qm", "seed"]), "commit the seed file");
-        let linked = dir.path().join("linked");
-        let linked_arg = linked.to_str().expect("utf8 worktree path");
-        assert!(
-            git(&main, &["worktree", "add", "-q", linked_arg, "-b", "side"]),
-            "add the linked worktree"
-        );
-        assert!(std::fs::symlink_metadata(linked.join(".git"))
-            .expect("worktree git entry")
-            .is_file());
-        assert!(is_project_root(&linked));
-    }
-
-    fn git(dir: &Path, arguments: &[&str]) -> bool {
-        // Keep the repo out of the developer's own git config and identity.
-        std::process::Command::new("git")
-            .current_dir(dir)
-            .args(arguments)
-            .env("GIT_CONFIG_GLOBAL", dir.join("absent-gitconfig"))
-            .env("GIT_CONFIG_NOSYSTEM", "1")
-            .env("GIT_AUTHOR_NAME", "terax")
-            .env("GIT_AUTHOR_EMAIL", "terax@example.invalid")
-            .env("GIT_COMMITTER_NAME", "terax")
-            .env("GIT_COMMITTER_EMAIL", "terax@example.invalid")
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .is_ok_and(|status| status.success())
+        assert!(!hook_mode(&args(&["open", "--terax-session-hook"])));
     }
 
     #[test]
